@@ -7,6 +7,7 @@ from tqdm import tqdm
 from playwright.async_api import async_playwright
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 # --- FastAPI app setup ---
 app = FastAPI()
@@ -81,3 +82,10 @@ async def root():
 async def scrape(request: ScrapeRequest):
     await run_scraper(request.base_url, request.total_pages, request.headless)
     return {"status": "Scraping complete", "output_file": "clutch_companies.csv"}
+
+@app.get("/download")
+async def download_file():
+    file_path = "clutch_companies.csv"  # Path to your CSV file
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type='application/octet-stream', filename="clutch_companies.csv")
+    return {"message": "File not found!"}
