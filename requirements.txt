@@ -1,5 +1,7 @@
-playwright==1.39.0  # or use a later version like 1.51.0
+fastapi
+uvicorn
+playwright==1.39.0    # or bump to 1.51.0 if you like
 pandas
 tqdm
-tabulate
-nest_asyncio
+tabulate              # you already had this
+nest_asyncio          # you already had this
