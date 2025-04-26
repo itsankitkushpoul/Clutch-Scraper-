@@ -14,11 +14,13 @@ app = FastAPI()
 
 # --- Scraper Config ---
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)…",
-    # add more if you want
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/112.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.01.722.58",
 ]
 
-PROXIES = [None]  # add as needed
+PROXIES = [None]  # add proxies if needed
 
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
@@ -38,18 +40,34 @@ async def scrape_page(url, headless, ua, proxy):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle")
 
+        # Company names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
-        websites = await page.eval_on_selector_all(
-            "a.provider__title-link.directory_profile",
-            "els => els.map(el => el.href)"
-        )
+
+        # Real company websites
+        websites = await page.evaluate("""
+        () => {
+            const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+            return Array.from(document.querySelectorAll(selector)).map(el => {
+                const href = el.getAttribute("href");
+                let dest = null;
+                try {
+                    const params = new URL(href, location.origin).searchParams;
+                    dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
+                } catch {}
+                return dest;
+            });
+        }
+        """)
+
+        # Locations
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
+
         await browser.close()
         return names, websites, locations
 
@@ -66,7 +84,7 @@ async def run_scraper(base_url, total_pages, headless):
             site = websites[idx] if idx < len(websites) else None
             loc = locs[idx] if idx < len(locs) else None
             rows.append({
-                "S.No": len(rows)+1,
+                "S.No": len(rows) + 1,
                 "Company": name,
                 "Website": site,
                 "Location": loc
