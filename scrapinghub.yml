@@ -2,7 +2,7 @@ version: 1
 
 # Your Scrapinghub project
 projects:
-  default: 810122  # Replace with your actual project ID.
+  default: 810123  # Replace with your actual project ID.
 
 # Custom Docker Image Deployment
 deploy:
