@@ -1,2 +1,5 @@
-playwright
+playwright==1.39.2
 pandas
+tqdm
+tabulate
+nest_asyncio
