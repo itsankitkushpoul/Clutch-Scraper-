@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# system deps for playwright
+# Install system dependencies for Playwright
 RUN apt-get update && apt-get install -y \
     curl gnupg && \
     curl -sSL https://deb.nodesource.com/setup_16.x | bash - && \
@@ -9,19 +9,21 @@ RUN apt-get update && apt-get install -y \
     libxss1 libgtk-3-0 libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
 
+# Set working directory
 WORKDIR /app
 
+# Copy and install Python dependencies
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
     playwright install --with-deps chromium
 
+# Copy the main app
 COPY main.py ./
 
-# default envs (you can override in Railway UI)
+# Set environment variables (optional defaults)
 ENV BASE_URL="https://clutch.co/agencies/digital-marketing"
 ENV TOTAL_PAGES="3"
 ENV HEADLESS="true"
 
-# ⛔ OLD (wrong): CMD ["python", "main.py"]
-# ✅ NEW (correct): Start FastAPI using uvicorn
+# Start the FastAPI app with uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
