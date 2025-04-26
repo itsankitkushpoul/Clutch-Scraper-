@@ -20,7 +20,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.01.722.58",
 ]
 
-PROXIES = [None]  # add proxies if needed
+PROXIES = [None]  # Add proxies if needed
 
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
@@ -46,18 +46,24 @@ async def scrape_page(url, headless, ua, proxy):
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # Real company websites
+        # Real company websites (CLEANED version)
         websites = await page.evaluate("""
         () => {
             const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
             return Array.from(document.querySelectorAll(selector)).map(el => {
                 const href = el.getAttribute("href");
-                let dest = null;
+                if (!href) return null;
                 try {
-                    const params = new URL(href, location.origin).searchParams;
-                    dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                } catch {}
-                return dest;
+                    const url = new URL(href, location.origin);
+                    const destParam = url.searchParams.get("u");
+                    if (destParam) {
+                        const cleanUrl = new URL(decodeURIComponent(destParam));
+                        return cleanUrl.origin;  // Only scheme + domain (https://example.com)
+                    }
+                } catch (e) {
+                    return null;
+                }
+                return null;
             });
         }
         """)
@@ -75,7 +81,7 @@ async def run_scraper(base_url, total_pages, headless):
     print(f"Scraping {total_pages} pages from {base_url}")
     rows = []
     for i in tqdm(range(1, total_pages + 1), desc="Pages"):
-        await asyncio.sleep(random.uniform(1, 3))
+        await asyncio.sleep(random.uniform(1, 3))  # random delay
         url = f"{base_url}?page={i}"
         ua = random.choice(USER_AGENTS)
         proxy = random.choice(PROXIES)
