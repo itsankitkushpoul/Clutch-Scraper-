@@ -1,7 +1,7 @@
 fastapi
 uvicorn
-playwright==1.39.0    # or bump to 1.51.0 if you like
+playwright==1.39.0
 pandas
 tqdm
-tabulate              # you already had this
-nest_asyncio          # you already had this
+tabulate
+nest_asyncio
