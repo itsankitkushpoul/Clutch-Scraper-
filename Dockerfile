@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
     playwright install --with-deps chromium
@@ -21,4 +22,6 @@ ENV BASE_URL="https://clutch.co/agencies/digital-marketing"
 ENV TOTAL_PAGES="3"
 ENV HEADLESS="true"
 
-CMD ["python", "main.py"]
+# ⛔ OLD (wrong): CMD ["python", "main.py"]
+# ✅ NEW (correct): Start FastAPI using uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
