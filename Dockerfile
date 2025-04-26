@@ -1,23 +1,24 @@
-# 1) Base
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-# 2) System deps for Playwright
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates gnupg libnss3 libatk1.0-0 libatk-bridge2.0-0 \
-    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libgtk-3-0 \
-  && rm -rf /var/lib/apt/lists/*
+# system deps for playwright
+RUN apt-get update && apt-get install -y \
+    curl gnupg && \
+    curl -sSL https://deb.nodesource.com/setup_16.x | bash - && \
+    apt-get install -y nodejs build-essential libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libxcomposite1 libxdamage1 libxrandr2 libasound2 libpangocairo-1.0-0 \
+    libxss1 libgtk-3-0 libgbm-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# 3) Python deps
 WORKDIR /app
-COPY requirements.txt /app/
-RUN pip install --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir playwright \
- && playwright install --with-deps
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    playwright install --with-deps chromium
 
-# 4) Copy entire codebase
-COPY . /app/
+COPY main.py ./
 
-# 5) Entrypoint
+# default envs (you can override in Railway UI)
+ENV BASE_URL="https://clutch.co/agencies/digital-marketing"
+ENV TOTAL_PAGES="3"
+ENV HEADLESS="true"
+
 CMD ["python", "main.py"]
-
