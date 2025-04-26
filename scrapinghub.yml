@@ -1,6 +1,5 @@
-project: 810115
-
-image: true
-
-commands:
-  default: python main.py
+version: 1
+projects:
+  default: 810122  # Your project ID
+deploy:
+  image: zyte/scrapy:latest  # Or your custom image (if you provided one)
