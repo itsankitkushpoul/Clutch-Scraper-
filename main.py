@@ -2,7 +2,7 @@ import os
 import asyncio
 import random
 import pandas as pd
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from tqdm import tqdm
 from playwright.async_api import async_playwright
 from fastapi import FastAPI
@@ -20,7 +20,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.01.722.58",
 ]
 
-PROXIES = [None]  # add proxies if needed
+PROXIES = [None]  # Add proxies if needed
 
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
@@ -39,6 +39,7 @@ async def scrape_page(url, headless, ua, proxy):
         page = await context.new_page()
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle")
+        await page.wait_for_selector("a.provider__title-link.directory_profile", timeout=60_000)
 
         # Company names
         names = await page.eval_on_selector_all(
@@ -46,21 +47,11 @@ async def scrape_page(url, headless, ua, proxy):
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # Real company websites
-        websites = await page.evaluate("""
-        () => {
-            const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-            return Array.from(document.querySelectorAll(selector)).map(el => {
-                const href = el.getAttribute("href");
-                let dest = null;
-                try {
-                    const params = new URL(href, location.origin).searchParams;
-                    dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                } catch {}
-                return dest;
-            });
-        }
-        """)
+        # Raw href links
+        raw_websites = await page.eval_on_selector_all(
+            "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc",
+            "els => els.map(el => el.getAttribute('href'))"
+        )
 
         # Locations
         locations = await page.eval_on_selector_all(
@@ -69,19 +60,36 @@ async def scrape_page(url, headless, ua, proxy):
         )
 
         await browser.close()
-        return names, websites, locations
+        return names, raw_websites, locations
+
+def clean_website(raw_link):
+    """Extract clean domain from the clutch tracking URL."""
+    if not raw_link:
+        return None
+    try:
+        full_url = f"https://clutch.co{raw_link}" if raw_link.startswith("/") else raw_link
+        parsed = urlparse(full_url)
+        params = parse_qs(parsed.query)
+        u = params.get("u", [None])[0]
+        if u:
+            clean_url = urlparse(u)
+            return f"{clean_url.scheme}://{clean_url.netloc}"
+    except Exception as e:
+        print(f"Error cleaning URL {raw_link}: {e}")
+    return None
 
 async def run_scraper(base_url, total_pages, headless):
     print(f"Scraping {total_pages} pages from {base_url}")
     rows = []
     for i in tqdm(range(1, total_pages + 1), desc="Pages"):
-        await asyncio.sleep(random.uniform(1, 3))
+        await asyncio.sleep(random.uniform(1, 2))
         url = f"{base_url}?page={i}"
         ua = random.choice(USER_AGENTS)
         proxy = random.choice(PROXIES)
-        names, websites, locs = await scrape_page(url, headless, ua, proxy)
+        names, raw_websites, locs = await scrape_page(url, headless, ua, proxy)
         for idx, name in enumerate(names):
-            site = websites[idx] if idx < len(websites) else None
+            raw_site = raw_websites[idx] if idx < len(raw_websites) else None
+            site = clean_website(raw_site)
             loc = locs[idx] if idx < len(locs) else None
             rows.append({
                 "S.No": len(rows) + 1,
