@@ -15,8 +15,9 @@ RUN pip install --upgrade pip \
  && pip install --no-cache-dir playwright \
  && playwright install --with-deps
 
-# 4) Copy code
-COPY main.py /app/main.py
+# 4) Copy entire codebase
+COPY . /app/
 
 # 5) Entrypoint
 CMD ["python", "main.py"]
+
