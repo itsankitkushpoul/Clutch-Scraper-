@@ -42,13 +42,16 @@ async def scrape_page(url, headless, ua, proxy):
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
-        data = await page.evaluate("""() => { /* your eval logic here */ }""")
+        websites = await page.eval_on_selector_all(
+            "a.provider__title-link.directory_profile",
+            "els => els.map(el => el.href)"
+        )
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
         await browser.close()
-        return names, data, locations
+        return names, websites, locations
 
 async def run_scraper(base_url, total_pages, headless):
     print(f"Scraping {total_pages} pages from {base_url}")
@@ -60,12 +63,13 @@ async def run_scraper(base_url, total_pages, headless):
         proxy = random.choice(PROXIES)
         names, websites, locs = await scrape_page(url, headless, ua, proxy)
         for idx, name in enumerate(names):
-            raw = websites[idx].get("destination_url") if idx < len(websites) else None
-            site = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            site = websites[idx] if idx < len(websites) else None
             loc = locs[idx] if idx < len(locs) else None
             rows.append({
-                "S.No": len(rows)+1, "Company": name,
-                "Website": site, "Location": loc
+                "S.No": len(rows)+1,
+                "Company": name,
+                "Website": site,
+                "Location": loc
             })
     df = pd.DataFrame(rows)
     out = "clutch_companies.csv"
