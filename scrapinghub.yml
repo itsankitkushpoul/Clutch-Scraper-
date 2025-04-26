@@ -1,29 +1,17 @@
-# The version of the configuration format.
 version: 1
 
-# The projects that you will deploy to, with project ID and default spider.
+# Your Scrapinghub project
 projects:
-  default: 810122  # Replace with your actual project ID from Scrapinghub.
+  default: 810122  # Replace with your actual project ID.
 
-# Deployment configuration settings
+# Custom Docker Image Deployment
 deploy:
-  image: my-dockerhub-username/my-scraper:latest  # Replace with your actual image path.
-  # If you are using Zyte's registry, the image path could be something like:
-  # image: zyte/scrapy:latest
-  # Or your custom image if you pushed it to Zyte's registry.
-  # Leave this empty for Zyte's default image repository.
+  image: my-dockerhub-username/my-scraper:latest  # Replace with your Docker image
 
-# Optional: environment variables (if needed)
+# Optional: Environment variables
 env:
-  PLAYWRIGHT_BROWSERS_PATH: '/usr/local/lib/python3.11/site-packages/playwright'  # Location where browsers are installed.
-  # Add more environment variables if necessary.
+  PLAYWRIGHT_BROWSERS_PATH: '/usr/local/lib/python3.11/site-packages/playwright'  # Playwright browsers path
 
-# The spider start command (if using Scrapy or another framework)
-# Uncomment if needed for Scrapy or other frameworks.
-# spider: my_spider  # Replace with your actual spider name.
-
-# Logging and debugging options
-# Use to control logging level if required
+# Optional: Logging settings
 logging:
-  level: INFO  # You can change this to DEBUG, WARNING, or ERROR based on the logs you need.
-
+  level: INFO  # Adjust logging level as needed
