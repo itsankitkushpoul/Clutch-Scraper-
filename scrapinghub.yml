@@ -1,3 +1,2 @@
-version: 1
-build:
-  image: custom
+project: 810115
+image: true
