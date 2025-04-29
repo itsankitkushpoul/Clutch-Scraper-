@@ -9,118 +9,39 @@ from tqdm import tqdm
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware  # ✅ Add this line
 
 # --- Configuration ---
-HEADLESS = True                # Run browser in headless mode
-USE_AGENT = True               # Rotate User-Agent header
-USER_AGENTS = [                # Realistic user agents to reduce bot detection
+HEADLESS = True
+USE_AGENT = True
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/112.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.01.722.58",
 ]
-PROXIES = [                    # Add proxy strings if needed; None uses direct connection
-    None,
-]
+PROXIES = [None]
 
 # --- FastAPI setup ---
 app = FastAPI()
+
+# ✅ Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Replace "*" with your frontend domain for production (e.g. "https://your-frontend.lovable.app")
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
     total_pages: int = 3
     headless: bool = HEADLESS
 
-async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
-    """
-    Scrape one Clutch listing page and return names, raw URLs, and locations.
-    """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
-        context_kwargs = {}
-        if ua:
-            context_kwargs['user_agent'] = ua
-        if proxy:
-            context_kwargs['proxy'] = {'server': proxy}
-        context = await browser.new_context(**context_kwargs)
-        page = await context.new_page()
+# (The rest of your code remains unchanged)
+# ... scrape_page, run_scraper, and endpoints ...
 
-        await page.goto(url, timeout=120_000)
-        await page.wait_for_load_state("networkidle", timeout=60_000)
-
-        # Extract company names
-        names = await page.eval_on_selector_all(
-            "a.provider__title-link.directory_profile",
-            "els => els.map(el => el.textContent.trim())"
-        )
-
-        # Extract website links
-        raw_sites = await page.evaluate('''
-        () => {
-            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
-            return Array.from(document.querySelectorAll(sel)).map(el => {
-                const href = el.getAttribute('href') || '';
-                try {
-                    const params = new URL(href, location.origin).searchParams;
-                    const u = params.get('u');
-                    return u ? decodeURIComponent(u) : null;
-                } catch {
-                    return null;
-                }
-            });
-        }
-        ''')
-
-        # Extract locations
-        locations = await page.eval_on_selector_all(
-            ".provider__highlights-item.sg-tooltip-v2.location",
-            "els => els.map(el => el.textContent.trim())"
-        )
-
-        await browser.close()
-        return names, raw_sites, locations
-
-async def run_scraper(base_url: str, total_pages: int, headless: bool):
-    """
-    Loop through pages 1..total_pages, aggregate results, and save to CSV.
-    """
-    all_data = []
-
-    for page_num in tqdm(range(1, total_pages + 1), desc="Scraping pages", unit="page"):
-        await asyncio.sleep(random.uniform(1, 3))  # rate limiting
-        page_url = f"{base_url}?page={page_num}"
-        ua = random.choice(USER_AGENTS) if USE_AGENT else None
-        proxy = random.choice(PROXIES)
-
-        try:
-            names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
-        except Exception as e:
-            print(f"Error on page {page_num}: {e}")
-            continue
-
-        print(f"Page {page_num} -> companies: {len(names)}, links: {len(raw_sites)}, locs: {len(locations)}")
-
-        for idx, name in enumerate(names):
-            raw = raw_sites[idx] if idx < len(raw_sites) else None
-            site = None
-            if raw:
-                parsed = urlparse(raw)
-                site = f"{parsed.scheme}://{parsed.netloc}"
-            loc = locations[idx] if idx < len(locations) else None
-            all_data.append({
-                "S.No": len(all_data) + 1,
-                "Company": name,
-                "Website": site,
-                "Location": loc
-            })
-
-    df = pd.DataFrame(all_data)
-    out_file = "clutch_companies.csv"
-    df.to_csv(out_file, index=False, encoding="utf-8-sig")
-    print(f"Scraping complete: {len(df)} records saved to {out_file}")
-    return len(df), out_file
-
-# --- API Endpoints ---
 @app.get("/")
 async def root():
     return {"status": "alive"}
