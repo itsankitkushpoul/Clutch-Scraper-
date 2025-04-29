@@ -4,8 +4,8 @@ import random
 import traceback
 import pandas as pd
 from urllib.parse import urlparse
-from tqdm import tqdm
 from playwright.async_api import async_playwright
+from tqdm import tqdm
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
@@ -21,11 +21,9 @@ USER_AGENTS = [                # Realistic user agents to reduce bot detection
 ]
 PROXIES = [                    # Add proxy strings if needed; None uses direct connection
     None,
-    # "http://your-proxy-server-1.com:8080",
-    # "http://your-proxy-server-2.com:8080",
 ]
 
-# --- FastAPI app setup ---
+# --- FastAPI setup ---
 app = FastAPI()
 
 class ScrapeRequest(BaseModel):
@@ -35,111 +33,114 @@ class ScrapeRequest(BaseModel):
 
 async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
     """
-    Scrape one Clutch listing page and return company names, website links, and locations.
+    Scrape one Clutch listing page and return names, raw URLs, and locations.
     """
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
-        ctx_args = {}
+        context_kwargs = {}
         if ua:
-            ctx_args['user_agent'] = ua
+            context_kwargs['user_agent'] = ua
         if proxy:
-            ctx_args['proxy'] = {'server': proxy}
-        context = await browser.new_context(**ctx_args)
+            context_kwargs['proxy'] = {'server': proxy}
+        context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
 
         await page.goto(url, timeout=120_000)
-        await page.wait_for_load_state("networkidle")
+        await page.wait_for_load_state("networkidle", timeout=60_000)
 
-        # 1) Company Names
+        # Extract company names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # 2) Actual Company Websites
-        site_data = await page.evaluate("""
+        # Extract website links
+        raw_sites = await page.evaluate('''
         () => {
-          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-          return Array.from(document.querySelectorAll(selector)).map(el => {
-            const href = el.getAttribute('href') || '';
-            try {
-              const params = new URL(href, location.origin).searchParams;
-              const u = params.get('u');
-              return u ? decodeURIComponent(u) : null;
-            } catch {
-              return null;
-            }
-          });
+            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
+            return Array.from(document.querySelectorAll(sel)).map(el => {
+                const href = el.getAttribute('href') || '';
+                try {
+                    const params = new URL(href, location.origin).searchParams;
+                    const u = params.get('u');
+                    return u ? decodeURIComponent(u) : null;
+                } catch {
+                    return null;
+                }
+            });
         }
-        """)
+        ''')
 
-        # 3) Locations
+        # Extract locations
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
 
         await browser.close()
-        return names, site_data, locations
+        return names, raw_sites, locations
 
 async def run_scraper(base_url: str, total_pages: int, headless: bool):
-    all_rows = []
-    for page_num in tqdm(range(1, total_pages + 1), desc="Pages", unit="page"):
-        await asyncio.sleep(random.uniform(1, 3))  # Polite rate limiting
+    """
+    Loop through pages 1..total_pages, aggregate results, and save to CSV.
+    """
+    all_data = []
+
+    for page_num in tqdm(range(1, total_pages + 1), desc="Scraping pages", unit="page"):
+        await asyncio.sleep(random.uniform(1, 3))  # rate limiting
         page_url = f"{base_url}?page={page_num}"
         ua = random.choice(USER_AGENTS) if USE_AGENT else None
         proxy = random.choice(PROXIES)
 
         try:
-            names, websites, locations = await scrape_page(page_url, headless, ua, proxy)
+            names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
         except Exception as e:
-            print(f"Error scraping page {page_num}: {e}")
+            print(f"Error on page {page_num}: {e}")
             continue
 
-        print(f"Page {page_num}: found {len(names)} companies, {len(websites)} websites, {len(locations)} locations")
+        print(f"Page {page_num} -> companies: {len(names)}, links: {len(raw_sites)}, locs: {len(locations)}")
 
         for idx, name in enumerate(names):
-            raw_site = websites[idx] if idx < len(websites) else None
+            raw = raw_sites[idx] if idx < len(raw_sites) else None
             site = None
-            if raw_site:
-                parsed = urlparse(raw_site)
+            if raw:
+                parsed = urlparse(raw)
                 site = f"{parsed.scheme}://{parsed.netloc}"
             loc = locations[idx] if idx < len(locations) else None
-            all_rows.append({
-                "S.No": len(all_rows) + 1,
+            all_data.append({
+                "S.No": len(all_data) + 1,
                 "Company": name,
                 "Website": site,
                 "Location": loc
             })
 
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(all_data)
     out_file = "clutch_companies.csv"
     df.to_csv(out_file, index=False, encoding="utf-8-sig")
-    print(f"Total records scraped: {len(df)}")
+    print(f"Scraping complete: {len(df)} records saved to {out_file}")
     return len(df), out_file
 
-# --- FastAPI Endpoints ---
+# --- API Endpoints ---
 @app.get("/")
 async def root():
-    return {"message": "Clutch scraper is live!"}
+    return {"status": "alive"}
 
 @app.post("/scrape")
-async def scraper_endpoint(request: ScrapeRequest):
+async def scrape_endpoint(req: ScrapeRequest):
     try:
-        count, filename = await run_scraper(request.base_url, request.total_pages, request.headless)
-        return {"status": "complete", "records": count, "file": filename}
+        count, filename = await run_scraper(req.base_url, req.total_pages, req.headless)
+        return {"status": "success", "records": count, "file": filename}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download")
-async def download_file():
-    file_path = "clutch_companies.csv"
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="application/octet-stream", filename=file_path)
-    raise HTTPException(status_code=404, detail="File not found")
+async def download():
+    path = "clutch_companies.csv"
+    if os.path.exists(path):
+        return FileResponse(path, filename=path)
+    raise HTTPException(status_code=404, detail="Not found")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
