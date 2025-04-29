@@ -9,22 +9,29 @@ from tqdm import tqdm
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- Configuration ---
-HEADLESS = True                # Run browser in headless mode
-USE_AGENT = True               # Rotate User-Agent header
-USER_AGENTS = [                # Realistic user agents to reduce bot detection
+HEADLESS = True
+USE_AGENT = True
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/112.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.01.722.58",
 ]
-PROXIES = [                    # Add proxy strings if needed; None uses direct connection
-    None,
-]
+PROXIES = [None]
 
 # --- FastAPI setup ---
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+allow_origins=["https://zp1v56uxy8rdx5ypatb0ockcb9tr6a-oci3--5173--d4eba4a9.local-credentialless.webcontainer-api.io/"],  # Removed trailing slash
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
@@ -32,9 +39,6 @@ class ScrapeRequest(BaseModel):
     headless: bool = HEADLESS
 
 async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
-    """
-    Scrape one Clutch listing page and return names, raw URLs, and locations.
-    """
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context_kwargs = {}
@@ -48,13 +52,11 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle", timeout=60_000)
 
-        # Extract company names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # Extract website links
         raw_sites = await page.evaluate('''
         () => {
             const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
@@ -71,7 +73,6 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         }
         ''')
 
-        # Extract locations
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
@@ -81,13 +82,10 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         return names, raw_sites, locations
 
 async def run_scraper(base_url: str, total_pages: int, headless: bool):
-    """
-    Loop through pages 1..total_pages, aggregate results, and save to CSV.
-    """
     all_data = []
 
     for page_num in tqdm(range(1, total_pages + 1), desc="Scraping pages", unit="page"):
-        await asyncio.sleep(random.uniform(1, 3))  # rate limiting
+        await asyncio.sleep(random.uniform(1, 3))
         page_url = f"{base_url}?page={page_num}"
         ua = random.choice(USER_AGENTS) if USE_AGENT else None
         proxy = random.choice(PROXIES)
@@ -97,8 +95,6 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
         except Exception as e:
             print(f"Error on page {page_num}: {e}")
             continue
-
-        print(f"Page {page_num} -> companies: {len(names)}, links: {len(raw_sites)}, locs: {len(locations)}")
 
         for idx, name in enumerate(names):
             raw = raw_sites[idx] if idx < len(raw_sites) else None
@@ -120,7 +116,6 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
     print(f"Scraping complete: {len(df)} records saved to {out_file}")
     return len(df), out_file
 
-# --- API Endpoints ---
 @app.get("/")
 async def root():
     return {"status": "alive"}
@@ -144,4 +139,5 @@ async def download():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
 
