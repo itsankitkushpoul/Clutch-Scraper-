@@ -27,7 +27,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://preview--clutch-agency-explorer.lovable.app/"],
+    allow_origins=["https://preview--clutch-agency-explorer.lovable.app"],  # Removed trailing slash
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
