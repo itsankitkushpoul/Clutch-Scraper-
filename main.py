@@ -28,7 +28,7 @@ app = FastAPI()
 # ✅ Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace "*" with your frontend domain for production (e.g. "https://your-frontend.lovable.app")
+    allow_origins=["https://preview--clutch-agency-explorer.lovable.app/"],  # Replace "*" with your frontend domain for production (e.g. "https://your-frontend.lovable.app")
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
