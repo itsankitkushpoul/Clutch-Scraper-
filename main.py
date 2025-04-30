@@ -27,7 +27,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-allow_origins=["https://clutch-agency-explorer.lovable.app/"],  # Removed trailing slash
+    allow_origins=["https://clutch-agency-explorer.lovable.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,7 +38,7 @@ class ScrapeRequest(BaseModel):
     total_pages: int = 3
     headless: bool = HEADLESS
 
-async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
+async def scrape_clutch(url: str, headless: bool, ua: str | None, proxy: str | None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context_kwargs = {}
@@ -47,39 +47,49 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         if proxy:
             context_kwargs['proxy'] = {'server': proxy}
         context = await browser.new_context(**context_kwargs)
+
+        # Fallback headers/proxy (second-script style)
+        if proxy:
+            await context.set_proxy({"server": proxy})
+        if ua:
+            await context.set_extra_http_headers({"User-Agent": ua})
+
         page = await context.new_page()
 
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle", timeout=60_000)
+        await page.wait_for_selector("a.provider__title-link.directory_profile", timeout=60_000)
 
+        # Company Names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        raw_sites = await page.evaluate('''
+        # Website Data
+        websites = await page.evaluate('''
         () => {
-            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
-            return Array.from(document.querySelectorAll(sel)).map(el => {
-                const href = el.getAttribute('href') || '';
-                try {
-                    const params = new URL(href, location.origin).searchParams;
-                    const u = params.get('u');
-                    return u ? decodeURIComponent(u) : null;
-                } catch {
-                    return null;
-                }
-            });
+          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href") || '';
+            let dest = null;
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {}
+            return { destination_url: dest };
+          });
         }
         ''')
 
+        # Location Extraction
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
 
         await browser.close()
-        return names, raw_sites, locations
+        return names, websites, locations
 
 async def run_scraper(base_url: str, total_pages: int, headless: bool):
     all_data = []
@@ -91,13 +101,13 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
         proxy = random.choice(PROXIES)
 
         try:
-            names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
+            names, websites, locations = await scrape_clutch(page_url, headless, ua, proxy)
         except Exception as e:
             print(f"Error on page {page_num}: {e}")
             continue
 
         for idx, name in enumerate(names):
-            raw = raw_sites[idx] if idx < len(raw_sites) else None
+            raw = websites[idx]["destination_url"] if idx < len(websites) else None
             site = None
             if raw:
                 parsed = urlparse(raw)
@@ -139,5 +149,3 @@ async def download():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-
-
