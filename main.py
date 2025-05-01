@@ -27,7 +27,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://clutch-agency-explorer.lovable.app", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"],
+    allow_origins=["https://clutch-agency-explorer.lovable.app", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://f82eae5a-65eb-4b3f-a5ee-97376a3ab8a0.lovableproject.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
