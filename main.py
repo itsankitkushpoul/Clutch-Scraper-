@@ -23,27 +23,25 @@ PROXIES = [None]
 
 # --- FastAPI setup ---
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com",
-        "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com",
-        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-    ],
+    allow_origins=["*"],  # You can restrict this later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- Data Models ---
 class ScrapeRequest(BaseModel):
     base_url: str = "https://clutch.co/agencies/digital-marketing"
     total_pages: int = 3
     headless: bool = HEADLESS
 
-# In-memory job store
+# --- In-memory job store ---
 jobs: dict[str, dict] = {}
 
-# --- Scraping logic ---
+# --- Scraping Logic ---
 async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -96,8 +94,10 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool, out_path:
         proxy = random.choice(PROXIES)
         try:
             names, raw_sites, locations = await scrape_page(paged_url, headless, ua, proxy)
-        except Exception:
+        except Exception as e:
+            print(f"[!] Error scraping page {page_num}: {e}")
             continue
+
         for idx, name in enumerate(names):
             raw = raw_sites[idx]["destination_url"] if idx < len(raw_sites) else None
             site = None
@@ -117,7 +117,6 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool, out_path:
     return len(df)
 
 def _do_scrape(job_id: str, base_url: str, total_pages: int, headless: bool):
-    """Background runner—updates jobs[job_id]."""
     try:
         filename = f"{job_id}_clutch.csv"
         count = asyncio.run(run_scraper(base_url, total_pages, headless, filename))
@@ -135,7 +134,13 @@ async def scrape_endpoint(req: ScrapeRequest, background_tasks: BackgroundTasks)
     job_id = uuid.uuid4().hex
     jobs[job_id] = {"status": "pending", "records": 0}
     background_tasks.add_task(_do_scrape, job_id, req.base_url, req.total_pages, req.headless)
-    return {"status": "accepted", "job_id": job_id}
+
+    return {
+        "status": "accepted",
+        "job_id": job_id,
+        "check_url": f"/status/{job_id}",
+        "download_url": f"/download/{job_id}"
+    }
 
 @app.get("/status/{job_id}")
 async def job_status(job_id: str):
@@ -152,5 +157,4 @@ async def download(job_id: str):
     path = job["file"]
     if not os.path.exists(path):
         raise HTTPException(404, "File not found on disk")
-    # Stream back the CSV with correct headers
     return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
