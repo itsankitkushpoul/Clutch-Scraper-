@@ -1,12 +1,10 @@
 import os
 import asyncio
 import random
-import traceback
 import uuid
 import pandas as pd
 from urllib.parse import urlparse
 from playwright.async_api import async_playwright
-from tqdm import tqdm
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
@@ -68,8 +66,8 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
 
         raw_sites = await page.evaluate("""
         () => {
-          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-          return Array.from(document.querySelectorAll(selector)).map(el => {
+          const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(sel)).map(el => {
             const href = el.getAttribute("href");
             let dest = null;
             try {
@@ -93,20 +91,19 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool, out_path:
     all_data = []
     for page_num in range(1, total_pages + 1):
         await asyncio.sleep(random.uniform(1, 3))
-        page_url = f"{base_url}?page={page_num}"
+        paged_url = f"{base_url}?page={page_num}"
         ua = random.choice(USER_AGENTS) if USE_AGENT else None
         proxy = random.choice(PROXIES)
         try:
-            names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
-        except Exception as e:
-            print(f"Error on page {page_num}: {e}")
+            names, raw_sites, locations = await scrape_page(paged_url, headless, ua, proxy)
+        except Exception:
             continue
         for idx, name in enumerate(names):
             raw = raw_sites[idx]["destination_url"] if idx < len(raw_sites) else None
             site = None
             if raw:
-                parsed = urlparse(raw)
-                site = f"{parsed.scheme}://{parsed.netloc}"
+                p = urlparse(raw)
+                site = f"{p.scheme}://{p.netloc}"
             loc = locations[idx] if idx < len(locations) else None
             all_data.append({
                 "S.No": len(all_data) + 1,
@@ -120,7 +117,7 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool, out_path:
     return len(df)
 
 def _do_scrape(job_id: str, base_url: str, total_pages: int, headless: bool):
-    """Runs in background; updates jobs[job_id] when done."""
+    """Background runner—updates jobs[job_id]."""
     try:
         filename = f"{job_id}_clutch.csv"
         count = asyncio.run(run_scraper(base_url, total_pages, headless, filename))
@@ -153,6 +150,7 @@ async def download(job_id: str):
     if not job or job.get("status") != "success":
         raise HTTPException(404, "File not available")
     path = job["file"]
-    if os.path.exists(path):
-        return FileResponse(path, filename=path)
-    raise HTTPException(404, "File not found on disk")
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found on disk")
+    # Stream back the CSV with correct headers
+    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
