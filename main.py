@@ -27,7 +27,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com/"],
+allow_origins=["https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"],  # Removed trailing slash
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,7 +38,7 @@ class ScrapeRequest(BaseModel):
     total_pages: int = 3
     headless: bool = HEADLESS
 
-async def scrape_clutch(url: str, headless: bool, ua: str | None, proxy: str | None):
+async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context_kwargs = {}
@@ -47,49 +47,39 @@ async def scrape_clutch(url: str, headless: bool, ua: str | None, proxy: str | N
         if proxy:
             context_kwargs['proxy'] = {'server': proxy}
         context = await browser.new_context(**context_kwargs)
-
-        # Fallback headers/proxy (second-script style)
-        if proxy:
-            await context.set_proxy({"server": proxy})
-        if ua:
-            await context.set_extra_http_headers({"User-Agent": ua})
-
         page = await context.new_page()
 
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle", timeout=60_000)
-        await page.wait_for_selector("a.provider__title-link.directory_profile", timeout=60_000)
 
-        # Company Names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # Website Data
-        websites = await page.evaluate('''
+        raw_sites = await page.evaluate('''
         () => {
-          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-          return Array.from(document.querySelectorAll(selector)).map(el => {
-            const href = el.getAttribute("href") || '';
-            let dest = null;
-            try {
-              const params = new URL(href, location.origin).searchParams;
-              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
-            } catch {}
-            return { destination_url: dest };
-          });
+            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
+            return Array.from(document.querySelectorAll(sel)).map(el => {
+                const href = el.getAttribute('href') || '';
+                try {
+                    const params = new URL(href, location.origin).searchParams;
+                    const u = params.get('u');
+                    return u ? decodeURIComponent(u) : null;
+                } catch {
+                    return null;
+                }
+            });
         }
         ''')
 
-        # Location Extraction
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
 
         await browser.close()
-        return names, websites, locations
+        return names, raw_sites, locations
 
 async def run_scraper(base_url: str, total_pages: int, headless: bool):
     all_data = []
@@ -101,13 +91,13 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
         proxy = random.choice(PROXIES)
 
         try:
-            names, websites, locations = await scrape_clutch(page_url, headless, ua, proxy)
+            names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
         except Exception as e:
             print(f"Error on page {page_num}: {e}")
             continue
 
         for idx, name in enumerate(names):
-            raw = websites[idx]["destination_url"] if idx < len(websites) else None
+            raw = raw_sites[idx] if idx < len(raw_sites) else None
             site = None
             if raw:
                 parsed = urlparse(raw)
@@ -149,3 +139,5 @@ async def download():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
+
