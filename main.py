@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from tabulate import tabulate
 
 # --- Configuration ---
 HEADLESS = True
@@ -27,7 +28,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-allow_origins=["https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"],  # Removed trailing slash
+    allow_origins=["https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,6 +39,7 @@ class ScrapeRequest(BaseModel):
     total_pages: int = 3
     headless: bool = HEADLESS
 
+# --- Scraping logic ---
 async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -51,36 +53,40 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
 
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state("networkidle", timeout=60_000)
+        await page.wait_for_selector("a.provider__title-link.directory_profile", timeout=60_000)
 
+        # Extracting company names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        raw_sites = await page.evaluate('''
+        # Extracting website links
+        data = await page.evaluate("""
         () => {
-            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item--non-ppc";
-            return Array.from(document.querySelectorAll(sel)).map(el => {
-                const href = el.getAttribute('href') || '';
-                try {
-                    const params = new URL(href, location.origin).searchParams;
-                    const u = params.get('u');
-                    return u ? decodeURIComponent(u) : null;
-                } catch {
-                    return null;
-                }
-            });
+          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href");
+            let dest = null;
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {}
+            return { destination_url: dest };
+          });
         }
-        ''')
+        """)
 
+        # Extracting locations
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
 
         await browser.close()
-        return names, raw_sites, locations
+        return names, data, locations
 
+# --- Running the Scraper ---
 async def run_scraper(base_url: str, total_pages: int, headless: bool):
     all_data = []
 
@@ -97,7 +103,7 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
             continue
 
         for idx, name in enumerate(names):
-            raw = raw_sites[idx] if idx < len(raw_sites) else None
+            raw = raw_sites[idx]["destination_url"] if idx < len(raw_sites) else None
             site = None
             if raw:
                 parsed = urlparse(raw)
@@ -114,6 +120,12 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
     out_file = "clutch_companies.csv"
     df.to_csv(out_file, index=False, encoding="utf-8-sig")
     print(f"Scraping complete: {len(df)} records saved to {out_file}")
+    
+    # Output formatted table
+    if not df.empty:
+        print("\nSample Results (First 10 companies):\n")
+        print(tabulate(df.head(10), headers='keys', tablefmt='pretty', showindex=False))
+    
     return len(df), out_file
 
 @app.get("/")
@@ -139,5 +151,3 @@ async def download():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-
-
