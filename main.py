@@ -2,15 +2,15 @@ import os
 import asyncio
 import random
 import traceback
+import uuid
 import pandas as pd
 from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 from tqdm import tqdm
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from tabulate import tabulate
 
 # --- Configuration ---
 HEADLESS = True
@@ -25,10 +25,13 @@ PROXIES = [None]
 
 # --- FastAPI setup ---
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com", "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com", "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"],
+    allow_origins=[
+        "https://91cbe760-1127-49d7-ae27-85bed47022aa.lovableproject.com",
+        "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com",
+        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,15 +42,18 @@ class ScrapeRequest(BaseModel):
     total_pages: int = 3
     headless: bool = HEADLESS
 
+# In-memory job store
+jobs: dict[str, dict] = {}
+
 # --- Scraping logic ---
 async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context_kwargs = {}
         if ua:
-            context_kwargs['user_agent'] = ua
+            context_kwargs["user_agent"] = ua
         if proxy:
-            context_kwargs['proxy'] = {'server': proxy}
+            context_kwargs["proxy"] = {"server": proxy}
         context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
 
@@ -55,14 +61,12 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         await page.wait_for_load_state("networkidle", timeout=60_000)
         await page.wait_for_selector("a.provider__title-link.directory_profile", timeout=60_000)
 
-        # Extracting company names
         names = await page.eval_on_selector_all(
             "a.provider__title-link.directory_profile",
             "els => els.map(el => el.textContent.trim())"
         )
 
-        # Extracting website links
-        data = await page.evaluate("""
+        raw_sites = await page.evaluate("""
         () => {
           const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
           return Array.from(document.querySelectorAll(selector)).map(el => {
@@ -77,31 +81,26 @@ async def scrape_page(url: str, headless: bool, ua: str | None, proxy: str | Non
         }
         """)
 
-        # Extracting locations
         locations = await page.eval_on_selector_all(
             ".provider__highlights-item.sg-tooltip-v2.location",
             "els => els.map(el => el.textContent.trim())"
         )
 
         await browser.close()
-        return names, data, locations
+        return names, raw_sites, locations
 
-# --- Running the Scraper ---
-async def run_scraper(base_url: str, total_pages: int, headless: bool):
+async def run_scraper(base_url: str, total_pages: int, headless: bool, out_path: str):
     all_data = []
-
-    for page_num in tqdm(range(1, total_pages + 1), desc="Scraping pages", unit="page"):
+    for page_num in range(1, total_pages + 1):
         await asyncio.sleep(random.uniform(1, 3))
         page_url = f"{base_url}?page={page_num}"
         ua = random.choice(USER_AGENTS) if USE_AGENT else None
         proxy = random.choice(PROXIES)
-
         try:
             names, raw_sites, locations = await scrape_page(page_url, headless, ua, proxy)
         except Exception as e:
             print(f"Error on page {page_num}: {e}")
             continue
-
         for idx, name in enumerate(names):
             raw = raw_sites[idx]["destination_url"] if idx < len(raw_sites) else None
             site = None
@@ -117,37 +116,43 @@ async def run_scraper(base_url: str, total_pages: int, headless: bool):
             })
 
     df = pd.DataFrame(all_data)
-    out_file = "clutch_companies.csv"
-    df.to_csv(out_file, index=False, encoding="utf-8-sig")
-    print(f"Scraping complete: {len(df)} records saved to {out_file}")
-    
-    # Output formatted table
-    if not df.empty:
-        print("\nSample Results (First 10 companies):\n")
-        print(tabulate(df.head(10), headers='keys', tablefmt='pretty', showindex=False))
-    
-    return len(df), out_file
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return len(df)
 
+def _do_scrape(job_id: str, base_url: str, total_pages: int, headless: bool):
+    """Runs in background; updates jobs[job_id] when done."""
+    try:
+        filename = f"{job_id}_clutch.csv"
+        count = asyncio.run(run_scraper(base_url, total_pages, headless, filename))
+        jobs[job_id].update({"status": "success", "records": count, "file": filename})
+    except Exception as e:
+        jobs[job_id].update({"status": "error", "message": str(e)})
+
+# --- API Endpoints ---
 @app.get("/")
 async def root():
     return {"status": "alive"}
 
-@app.post("/scrape")
-async def scrape_endpoint(req: ScrapeRequest):
-    try:
-        count, filename = await run_scraper(req.base_url, req.total_pages, req.headless)
-        return {"status": "success", "records": count, "file": filename}
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/scrape", status_code=202)
+async def scrape_endpoint(req: ScrapeRequest, background_tasks: BackgroundTasks):
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"status": "pending", "records": 0}
+    background_tasks.add_task(_do_scrape, job_id, req.base_url, req.total_pages, req.headless)
+    return {"status": "accepted", "job_id": job_id}
 
-@app.get("/download")
-async def download():
-    path = "clutch_companies.csv"
+@app.get("/status/{job_id}")
+async def job_status(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+@app.get("/download/{job_id}")
+async def download(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job.get("status") != "success":
+        raise HTTPException(404, "File not available")
+    path = job["file"]
     if os.path.exists(path):
         return FileResponse(path, filename=path)
-    raise HTTPException(status_code=404, detail="Not found")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    raise HTTPException(404, "File not found on disk")
