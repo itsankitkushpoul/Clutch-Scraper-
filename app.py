@@ -3,6 +3,7 @@ from pydantic import BaseModel, HttpUrl, conint
 import asyncio, random
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse
+from fastapi.middleware.cors import CORSMiddleware
 
 # Configuration
 HEADLESS = True
@@ -19,6 +20,16 @@ class ScrapeRequest(BaseModel):
     total_pages: conint(gt=0, le=20) = 3
 
 app = FastAPI(title="Clutch Scraper API")
+
+# CORS settings
+frontend_domain = "https://your-frontend-domain.com"  # Replace this with your frontend domain
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_domain],  # Allow only your frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 @app.get("/health")
 def health():
