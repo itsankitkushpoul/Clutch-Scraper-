@@ -1,10 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
-import asyncio, random
+import asyncio, random, logging
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
-import logging
 
 # Enable basic logging
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +45,6 @@ if ENABLE_CORS:
         logging.error(f"Failed to add CORS middleware: {e}")
 
 @app.get("/health")
-
 def health():
     return {"status": "ok"}
 
@@ -56,9 +54,7 @@ async def scrape_page(url: str):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
-        context = await browser.new_context(
-            proxy={"server": proxy} if proxy else None
-        )
+        context = await browser.new_context(proxy={"server": proxy} if proxy else None)
         if ua:
             await context.set_extra_http_headers({'User-Agent': ua})
         page = await context.new_page()
@@ -66,50 +62,87 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Company Names & featured flag
-        items = await page.evaluate("""
-        () => {
-          const nameEls = Array.from(document.querySelectorAll(
-            'a.provider__title-link.directory_profile, a.provider__title-link.ppc-website-link'
-          ));
-          const locations = Array.from(document.querySelectorAll(
-            '.provider__highlights-item.sg-tooltip-v2.location'
-          ));
-          const linkEls = Array.from(document.querySelectorAll(
-            'a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item'
-          ));
+        results = []
 
-          return nameEls.map((el, idx) => {
-            const raw = linkEls[idx]?.getAttribute('href') || null;
-            let website = null;
-            if (raw) {
-              try {
-                const params = new URL(raw, location.origin).searchParams;
-                const dest = params.get('u') ? decodeURIComponent(params.get('u')) : null;
-                if (dest) {
-                  const parsed = new URL(dest);
-                  website = `${parsed.protocol}//${parsed.host}`;
-                }
-              } catch {}
+        # --- 1) Regular directory listings ---
+        names = await page.eval_on_selector_all(
+            'a.provider__title-link.directory_profile',
+            'els => els.map(el => el.textContent.trim())'
+        )
+        raw_links = await page.evaluate("""
+        () => {
+          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href");
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              return params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {
+              return null;
             }
-            return {
-              company: el.textContent.trim(),
-              location: locations[idx]?.textContent.trim() || None,
-              website,
-              featured: el.classList.contains('ppc-website-link')
-            };
           });
         }
         """)
+        locations = await page.eval_on_selector_all(
+            '.provider__highlights-item.sg-tooltip-v2.location',
+            'els => els.map(el => el.textContent.trim())'
+        )
+
+        for i, name in enumerate(names):
+            raw = raw_links[i] if i < len(raw_links) else None
+            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            loc = locations[i] if i < len(locations) else None
+            results.append({
+                'company': name,
+                'website': website,
+                'location': loc,
+                'featured': False
+            })
+
+        # --- 2) Featured (sponsored) listings ---
+        featured_names = await page.eval_on_selector_all(
+            'a.provider__title-link.ppc-website-link',
+            'els => els.map(el => el.textContent.trim())'
+        )
+        featured_raw_links = await page.evaluate("""
+        () => {
+          const selector = "a.provider__cta-link.ppc_position--link";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href");
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              return params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {
+              return null;
+            }
+          });
+        }
+        """)
+        featured_locs = await page.eval_on_selector_all(
+            'div.provider__highlights-item.sg-tooltip-v2.location',
+            'els => els.map(el => el.textContent.trim())'
+        )
+
+        for i, name in enumerate(featured_names):
+            raw = featured_raw_links[i] if i < len(featured_raw_links) else None
+            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            loc = featured_locs[i] if i < len(featured_locs) else None
+            results.append({
+                'company': name,
+                'website': website,
+                'location': loc,
+                'featured': True
+            })
 
         await browser.close()
-        return items
+        return results
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    tasks = []
-    for p in range(1, req.total_pages + 1):
-        tasks.append(scrape_page(f"{req.base_url}?page={p}"))
+    tasks = [
+        scrape_page(f"{req.base_url}?page={p}")
+        for p in range(1, req.total_pages + 1)
+    ]
     results = await asyncio.gather(*tasks)
     flat = [item for sub in results for item in sub]
     if not flat:
