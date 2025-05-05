@@ -46,6 +46,7 @@ if ENABLE_CORS:
         logging.error(f"Failed to add CORS middleware: {e}")
 
 @app.get("/health")
+
 def health():
     return {"status": "ok"}
 
@@ -65,44 +66,44 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Company Names
-        names = await page.eval_on_selector_all(
-            'a.provider__title-link.directory_profile',
-            'els => els.map(el => el.textContent.trim())'
-        )
-
-        # Website Links
-        raw_links = await page.evaluate("""
+        # Company Names & featured flag
+        items = await page.evaluate("""
         () => {
-          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-          return Array.from(document.querySelectorAll(selector)).map(el => {
-            const href = el.getAttribute("href");
-            let dest = null;
-            try {
-              const params = new URL(href, location.origin).searchParams;
-              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
-            } catch {}
-            return dest;
+          const nameEls = Array.from(document.querySelectorAll(
+            'a.provider__title-link.directory_profile, a.provider__title-link.ppc-website-link'
+          ));
+          const locations = Array.from(document.querySelectorAll(
+            '.provider__highlights-item.sg-tooltip-v2.location'
+          ));
+          const linkEls = Array.from(document.querySelectorAll(
+            'a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item'
+          ));
+
+          return nameEls.map((el, idx) => {
+            const raw = linkEls[idx]?.getAttribute('href') || null;
+            let website = null;
+            if (raw) {
+              try {
+                const params = new URL(raw, location.origin).searchParams;
+                const dest = params.get('u') ? decodeURIComponent(params.get('u')) : null;
+                if (dest) {
+                  const parsed = new URL(dest);
+                  website = `${parsed.protocol}//${parsed.host}`;
+                }
+              } catch {}
+            }
+            return {
+              company: el.textContent.trim(),
+              location: locations[idx]?.textContent.trim() || None,
+              website,
+              featured: el.classList.contains('ppc-website-link')
+            };
           });
         }
         """)
 
-        # Locations
-        locations = await page.eval_on_selector_all(
-            '.provider__highlights-item.sg-tooltip-v2.location',
-            'els => els.map(el => el.textContent.trim())'
-        )
-
         await browser.close()
-
-        results = []
-        for i, name in enumerate(names):
-            raw = raw_links[i] if i < len(raw_links) else None
-            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
-            loc = locations[i] if i < len(locations) else None
-            results.append({'company': name, 'website': website, 'location': loc})
-
-        return results
+        return items
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
