@@ -25,7 +25,7 @@ app = FastAPI(title="Clutch Scraper API")
 frontend_domain = "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"  # Replace this with your frontend domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com/"],  # Allow only your frontend domain
+    allow_origins=["https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"],  # Allow only your frontend domain
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allow all headers
