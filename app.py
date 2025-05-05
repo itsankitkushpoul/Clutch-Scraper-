@@ -12,21 +12,19 @@ logging.basicConfig(level=logging.INFO)
 # Configuration
 HEADLESS = True
 USE_AGENT = True
-ENABLE_CORS = True  # Toggle CORS on/off easily
+ENABLE_CORS = True
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
     # Add more if needed
 ]
 PROXIES = [None]
 
-# Request schema
 class ScrapeRequest(BaseModel):
     base_url: HttpUrl
     total_pages: conint(gt=0, le=20) = 3
 
 app = FastAPI(title="Clutch Scraper API")
 
-# CORS settings
 if ENABLE_CORS:
     try:
         frontend_domains = [
@@ -63,13 +61,10 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Company Names
         names = await page.eval_on_selector_all(
             'a.provider__title-link.directory_profile',
             'els => els.map(el => el.textContent.trim())'
         )
-
-        # Website Links
         raw_links = await page.evaluate("""
         () => {
           const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
@@ -84,8 +79,6 @@ async def scrape_page(url: str):
           });
         }
         """)
-
-        # Locations
         locations = await page.eval_on_selector_all(
             '.provider__highlights-item.sg-tooltip-v2.location',
             'els => els.map(el => el.textContent.trim())'
@@ -98,21 +91,39 @@ async def scrape_page(url: str):
             raw = raw_links[i] if i < len(raw_links) else None
             website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
             loc = locations[i] if i < len(locations) else None
-            results.append({'company': name, 'website': website, 'location': loc})
+            results.append({
+                'company': name,
+                'website': website,
+                'location': loc,
+                # these two fields for stable sorting later
+                'page': None,
+                'index': i
+            })
 
         return results
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
     all_results = []
-    # Fetch each page one after the other
+
     for page_num in range(1, req.total_pages + 1):
         page_url = f"{req.base_url}?page={page_num}"
         logging.info(f"Scraping page {page_num}: {page_url}")
         page_results = await scrape_page(page_url)
+        # tag with page number
+        for entry in page_results:
+            entry['page'] = page_num
         all_results.extend(page_results)
 
     if not all_results:
         raise HTTPException(status_code=204, detail="No data scraped.")
+
+    # sort by page, then by index
+    all_results.sort(key=lambda x: (x['page'], x['index']))
+
+    # strip out the helper fields
+    for e in all_results:
+        e.pop('page', None)
+        e.pop('index', None)
 
     return {"count": len(all_results), "data": all_results}
