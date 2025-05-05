@@ -4,10 +4,15 @@ import asyncio, random
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+
+# Enable basic logging
+logging.basicConfig(level=logging.INFO)
 
 # Configuration
 HEADLESS = True
 USE_AGENT = True
+ENABLE_CORS = True  # Toggle CORS on/off easily
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
     # Add more if needed
@@ -22,14 +27,19 @@ class ScrapeRequest(BaseModel):
 app = FastAPI(title="Clutch Scraper API")
 
 # CORS settings
-frontend_domain = "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"  # Replace this with your frontend domain
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"],  # Allow only your frontend domain
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allow all headers
-)
+if ENABLE_CORS:
+    try:
+        frontend_domain = "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[frontend_domain],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        logging.info(f"CORS enabled for: {frontend_domain}")
+    except Exception as e:
+        logging.error(f"Failed to add CORS middleware: {e}")
 
 @app.get("/health")
 def health():
@@ -57,7 +67,7 @@ async def scrape_page(url: str):
             'els => els.map(el => el.textContent.trim())'
         )
 
-        # Website Links with full selector logic
+        # Website Links
         raw_links = await page.evaluate("""
         () => {
           const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
@@ -73,7 +83,7 @@ async def scrape_page(url: str):
         }
         """)
 
-        # Locations with full selector
+        # Locations
         locations = await page.eval_on_selector_all(
             '.provider__highlights-item.sg-tooltip-v2.location',
             'els => els.map(el => el.textContent.trim())'
