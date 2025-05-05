@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, HttpUrl, conint
 import random
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Playwright, Browser
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import re
+import asyncio
 
 # Enable basic logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,7 @@ class ScrapeRequest(BaseModel):
 
 app = FastAPI(title="Clutch Scraper API")
 
-# CORS settings
+# Attach CORS middleware if enabled
 if ENABLE_CORS:
     frontend_domains = [
         "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
@@ -57,6 +58,27 @@ if ENABLE_CORS:
     )
     logging.info(f"CORS enabled for: {frontend_domains}")
 
+# Global objects for Playwright
+app.state.playwright: Playwright = None
+app.state.browser: Browser = None
+
+@app.on_event("startup")
+async def startup_event():
+    # Initialize Playwright and launch a single browser instance
+    logging.info("Starting Playwright...")
+    app.state.playwright = await async_playwright().start()
+    app.state.browser = await app.state.playwright.chromium.launch(headless=HEADLESS)
+    logging.info("Browser launched.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Close browser and stop Playwright
+    logging.info("Closing browser and stopping Playwright...")
+    if app.state.browser:
+        await app.state.browser.close()
+    if app.state.playwright:
+        await app.state.playwright.stop()
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -65,9 +87,12 @@ async def scrape_page(url: str):
     ua = random.choice(USER_AGENTS) if USE_AGENT else None
     proxy = random.choice(PROXIES)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
-        context = await browser.new_context(proxy={"server": proxy} if proxy else None)
+    results = []
+    try:
+        # Create a new context per page for isolation
+        context = await app.state.browser.new_context(
+            proxy={"server": proxy} if proxy else None
+        )
         if ua:
             await context.set_extra_http_headers({'User-Agent': ua})
         page = await context.new_page()
@@ -77,11 +102,10 @@ async def scrape_page(url: str):
 
         listings = page.locator(LISTING_CONTAINER_SELECTOR)
         count = await listings.count()
-        results = []
+        logging.info(f"Found {count} listings on {url}")
 
         for i in range(count):
             item = listings.nth(i)
-            # Scope to main-info block for consistent grouping
             block = item.locator(MAIN_INFO_SELECTOR).first
 
             # Name
@@ -97,17 +121,14 @@ async def scrape_page(url: str):
             if await link_loc.count() > 0:
                 href = await link_loc.get_attribute('href')
                 if href:
-                    try:
-                        from urllib.parse import parse_qs, unquote
-                        url_obj = urlparse(href)
-                        qs = parse_qs(url_obj.query).get('u', [])
-                        dest = unquote(qs[0]) if qs else href
-                        parsed = urlparse(dest)
-                        website = f"{parsed.scheme}://{parsed.netloc}"
-                    except Exception:
-                        website = href
+                    from urllib.parse import parse_qs, unquote
+                    url_obj = urlparse(href)
+                    qs = parse_qs(url_obj.query).get('u', [])
+                    dest = unquote(qs[0]) if qs else href
+                    parsed = urlparse(dest)
+                    website = f"{parsed.scheme}://{parsed.netloc}"
 
-            # Location (outside main-info)
+            # Location
             location = None
             loc_loc = item.locator(LOCATION_SELECTOR).first
             if await loc_loc.count() > 0:
@@ -115,23 +136,27 @@ async def scrape_page(url: str):
                 location = clean_text(raw_loc)
 
             if name:
-                results.append({
-                    'company': name,
-                    'website': website,
-                    'location': location
-                })
+                results.append({'company': name, 'website': website, 'location': location})
 
-        await browser.close()
-        return results
+        await context.close()
+    except Exception as e:
+        logging.error(f"Error scraping {url}: {e}")
+    return results
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
     all_results = []
-    for page_num in range(1, req.total_pages + 1):
-        page_url = f"{req.base_url}?page={page_num}"
-        logging.info(f"Scraping page {page_num}: {page_url}")
-        page_results = await scrape_page(page_url)
-        all_results.extend(page_results)
+    timeout = req.total_pages * 30  # e.g., 30s per page
+    try:
+        # Ensure endpoint doesn’t hang indefinitely
+        for page_num in range(1, req.total_pages + 1):
+            page_url = f"{req.base_url}?page={page_num}"
+            logging.info(f"Scraping page {page_num}: {page_url}")
+            page_results = await asyncio.wait_for(scrape_page(page_url), timeout=30)
+            all_results.extend(page_results)
+    except asyncio.TimeoutError:
+        logging.error("Page scraping timed out")
+        raise HTTPException(status_code=504, detail="Scraping timed out")
 
     if not all_results:
         raise HTTPException(status_code=204, detail="No data scraped.")
