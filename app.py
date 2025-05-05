@@ -40,19 +40,31 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
+        # Company Names
         names = await page.eval_on_selector_all(
             'a.provider__title-link.directory_profile',
             'els => els.map(el => el.textContent.trim())'
         )
 
+        # Website Links with full selector logic
         raw_links = await page.evaluate("""
-        () => Array.from(
-          document.querySelectorAll('a.provider__cta-link.website-link__item')
-        ).map(el => el.href)
+        () => {
+          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href");
+            let dest = null;
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {}
+            return dest;
+          });
+        }
         """)
 
+        # Locations with full selector
         locations = await page.eval_on_selector_all(
-            '.provider__highlights-item.location',
+            '.provider__highlights-item.sg-tooltip-v2.location',
             'els => els.map(el => el.textContent.trim())'
         )
 
