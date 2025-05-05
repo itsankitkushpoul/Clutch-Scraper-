@@ -29,10 +29,10 @@ app = FastAPI(title="Clutch Scraper API")
 # CORS settings
 if ENABLE_CORS:
     try:
-        frontend_domain = "https://bf2aeaa9-1c53-465a-85da-704004dcf688.lovableproject.com"
+        frontend_domain = "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=[frontend_domain],
+            allow_origins=["https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com"],
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
