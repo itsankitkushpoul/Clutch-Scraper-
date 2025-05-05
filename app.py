@@ -106,11 +106,13 @@ async def scrape_page(url: str):
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    tasks = []
+    results = []
     for p in range(1, req.total_pages + 1):
-        tasks.append(scrape_page(f"{req.base_url}?page={p}"))
-    results = await asyncio.gather(*tasks)
-    flat = [item for sub in results for item in sub]
-    if not flat:
+        page_url = f"{req.base_url}?page={p}"
+        logging.info(f"Scraping page {p}: {page_url}")
+        page_results = await scrape_page(page_url)
+        results.extend(page_results)
+
+    if not results:
         raise HTTPException(status_code=204, detail="No data scraped.")
-    return {"count": len(flat), "data": flat}
+    return {"count": len(results), "data": results}
