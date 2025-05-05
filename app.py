@@ -22,7 +22,8 @@ PROXIES = [None]
 
 # Selectors
 LISTING_CONTAINER_SELECTOR = 'li.provider-list-item'
-NAME_SELECTOR = 'h3.provider__title a.provider__title-link'
+MAIN_INFO_SELECTOR = 'div.provider__main-info'
+NAME_SELECTOR = 'a.provider__title-link.directory_profile'
 LOCATION_SELECTOR = 'div.provider__highlights div.location'
 WEBSITE_BUTTON_SELECTOR = 'div.provider__cta-container a.sg-button-v2--primary:has-text("Visit Website")'
 
@@ -74,44 +75,44 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Locate all listing items in DOM order
         listings = page.locator(LISTING_CONTAINER_SELECTOR)
         count = await listings.count()
         results = []
 
         for i in range(count):
             item = listings.nth(i)
+            # Scope to main-info block for consistent grouping
+            block = item.locator(MAIN_INFO_SELECTOR).first
+
             # Name
             name = None
-            name_loc = item.locator(NAME_SELECTOR).first
+            name_loc = block.locator(NAME_SELECTOR).first
             if await name_loc.count() > 0:
                 raw_name = await name_loc.text_content()
                 name = clean_text(raw_name)
 
-            # Location
-            location = None
-            loc_loc = item.locator(LOCATION_SELECTOR).first
-            if await loc_loc.count() > 0:
-                raw_loc = await loc_loc.text_content()
-                location = clean_text(raw_loc)
-
             # Website
             website = None
-            link_loc = item.locator(WEBSITE_BUTTON_SELECTOR).first
+            link_loc = block.locator(WEBSITE_BUTTON_SELECTOR).first
             if await link_loc.count() > 0:
                 href = await link_loc.get_attribute('href')
                 if href:
                     try:
-                        # Decode any '?u=' param
-                        url_obj = urlparse(href)
-                        # If query param 'u'
                         from urllib.parse import parse_qs, unquote
+                        url_obj = urlparse(href)
                         qs = parse_qs(url_obj.query).get('u', [])
                         dest = unquote(qs[0]) if qs else href
                         parsed = urlparse(dest)
                         website = f"{parsed.scheme}://{parsed.netloc}"
                     except Exception:
                         website = href
+
+            # Location (outside main-info)
+            location = None
+            loc_loc = item.locator(LOCATION_SELECTOR).first
+            if await loc_loc.count() > 0:
+                raw_loc = await loc_loc.text_content()
+                location = clean_text(raw_loc)
 
             if name:
                 results.append({
