@@ -5,6 +5,7 @@ from playwright.async_api import async_playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import re
 
 # Enable basic logging
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,19 @@ USER_AGENTS = [
 ]
 PROXIES = [None]
 
+# Selectors
+LISTING_CONTAINER_SELECTOR = 'li.provider-list-item'
+NAME_SELECTOR = 'h3.provider__title a.provider__title-link'
+LOCATION_SELECTOR = 'div.provider__highlights div.location'
+WEBSITE_BUTTON_SELECTOR = 'div.provider__cta-container a.sg-button-v2--primary:has-text("Visit Website")'
+
+# Utility to clean text
+
+def clean_text(text: str) -> str:
+    if text:
+        return re.sub(r'\s+', ' ', text).strip()
+    return None
+
 # Request schema
 class ScrapeRequest(BaseModel):
     base_url: HttpUrl
@@ -28,22 +42,19 @@ app = FastAPI(title="Clutch Scraper API")
 
 # CORS settings
 if ENABLE_CORS:
-    try:
-        frontend_domains = [
-            "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-            "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-            "https://clutch-agency-explorer-ui.lovable.app"
-        ]
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=frontend_domains,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-        logging.info(f"CORS enabled for: {frontend_domains}")
-    except Exception as e:
-        logging.error(f"Failed to add CORS middleware: {e}")
+    frontend_domains = [
+        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+        "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
+        "https://clutch-agency-explorer-ui.lovable.app"
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=frontend_domains,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logging.info(f"CORS enabled for: {frontend_domains}")
 
 @app.get("/health")
 def health():
@@ -55,9 +66,7 @@ async def scrape_page(url: str):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
-        context = await browser.new_context(
-            proxy={"server": proxy} if proxy else None
-        )
+        context = await browser.new_context(proxy={"server": proxy} if proxy else None)
         if ua:
             await context.set_extra_http_headers({'User-Agent': ua})
         page = await context.new_page()
@@ -65,45 +74,51 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Grab everything in one map, in DOM order
-        results = await page.evaluate("""
-        () => {
-          return Array.from(
-            document.querySelectorAll('a.provider__title-link.directory_profile')
-          ).map(anchor => {
-            const company = anchor.textContent.trim();
+        # Locate all listing items in DOM order
+        listings = page.locator(LISTING_CONTAINER_SELECTOR)
+        count = await listings.count()
+        results = []
 
-            // Walk up to the nearest parent that contains both name, link, and location
-            const container = anchor.closest('[class*="provider"]');
+        for i in range(count):
+            item = listings.nth(i)
+            # Name
+            name = None
+            name_loc = item.locator(NAME_SELECTOR).first
+            if await name_loc.count() > 0:
+                raw_name = await name_loc.text_content()
+                name = clean_text(raw_name)
 
-            // Website link
-            let website = null;
-            if (container) {
-              const linkEl = container.querySelector(
-                'a.provider__cta-link.sg-button-v2--primary.website-link__item--non-ppc'
-              );
-              if (linkEl) {
-                try {
-                  const urlObj = new URL(linkEl.href, location.origin);
-                  const real = urlObj.searchParams.get('u');
-                  website = real ? decodeURIComponent(real) : linkEl.href;
-                } catch {
-                  website = linkEl.href;
-                }
-              }
-            }
+            # Location
+            location = None
+            loc_loc = item.locator(LOCATION_SELECTOR).first
+            if await loc_loc.count() > 0:
+                raw_loc = await loc_loc.text_content()
+                location = clean_text(raw_loc)
 
-            // Location
-            let locationText = null;
-            if (container) {
-              const locEl = container.querySelector('.provider__highlights-item.location');
-              if (locEl) locationText = locEl.textContent.trim();
-            }
+            # Website
+            website = None
+            link_loc = item.locator(WEBSITE_BUTTON_SELECTOR).first
+            if await link_loc.count() > 0:
+                href = await link_loc.get_attribute('href')
+                if href:
+                    try:
+                        # Decode any '?u=' param
+                        url_obj = urlparse(href)
+                        # If query param 'u'
+                        from urllib.parse import parse_qs, unquote
+                        qs = parse_qs(url_obj.query).get('u', [])
+                        dest = unquote(qs[0]) if qs else href
+                        parsed = urlparse(dest)
+                        website = f"{parsed.scheme}://{parsed.netloc}"
+                    except Exception:
+                        website = href
 
-            return { company, website, location: locationText };
-          });
-        }
-        """)
+            if name:
+                results.append({
+                    'company': name,
+                    'website': website,
+                    'location': location
+                })
 
         await browser.close()
         return results
