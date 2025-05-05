@@ -1,12 +1,10 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
-import random
-from playwright.async_api import async_playwright, Playwright, Browser
+import asyncio, random
+from playwright.async_api import async_playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-import re
-import asyncio
 
 # Enable basic logging
 logging.basicConfig(level=logging.INFO)
@@ -21,20 +19,6 @@ USER_AGENTS = [
 ]
 PROXIES = [None]
 
-# Selectors
-LISTING_CONTAINER_SELECTOR = 'li.provider-list-item'
-MAIN_INFO_SELECTOR = 'div.provider__main-info'
-NAME_SELECTOR = 'a.provider__title-link.directory_profile'
-LOCATION_SELECTOR = 'div.provider__highlights div.location'
-WEBSITE_BUTTON_SELECTOR = 'div.provider__cta-container a.sg-button-v2--primary:has-text("Visit Website")'
-
-# Utility to clean text
-
-def clean_text(text: str) -> str:
-    if text:
-        return re.sub(r'\s+', ' ', text).strip()
-    return None
-
 # Request schema
 class ScrapeRequest(BaseModel):
     base_url: HttpUrl
@@ -42,42 +26,24 @@ class ScrapeRequest(BaseModel):
 
 app = FastAPI(title="Clutch Scraper API")
 
-# Attach CORS middleware if enabled
+# CORS settings
 if ENABLE_CORS:
-    frontend_domains = [
-        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-        "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-        "https://clutch-agency-explorer-ui.lovable.app"
-    ]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=frontend_domains,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    logging.info(f"CORS enabled for: {frontend_domains}")
-
-# Global objects for Playwright
-app.state.playwright: Playwright = None
-app.state.browser: Browser = None
-
-@app.on_event("startup")
-async def startup_event():
-    # Initialize Playwright and launch a single browser instance
-    logging.info("Starting Playwright...")
-    app.state.playwright = await async_playwright().start()
-    app.state.browser = await app.state.playwright.chromium.launch(headless=HEADLESS)
-    logging.info("Browser launched.")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    # Close browser and stop Playwright
-    logging.info("Closing browser and stopping Playwright...")
-    if app.state.browser:
-        await app.state.browser.close()
-    if app.state.playwright:
-        await app.state.playwright.stop()
+    try:
+        frontend_domains = [
+            "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+            "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
+            "https://clutch-agency-explorer-ui.lovable.app"
+        ]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=frontend_domains,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        logging.info(f"CORS enabled for: {frontend_domains}")
+    except Exception as e:
+        logging.error(f"Failed to add CORS middleware: {e}")
 
 @app.get("/health")
 def health():
@@ -87,10 +53,9 @@ async def scrape_page(url: str):
     ua = random.choice(USER_AGENTS) if USE_AGENT else None
     proxy = random.choice(PROXIES)
 
-    results = []
-    try:
-        # Create a new context per page for isolation
-        context = await app.state.browser.new_context(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=HEADLESS)
+        context = await browser.new_context(
             proxy={"server": proxy} if proxy else None
         )
         if ua:
@@ -100,65 +65,52 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        listings = page.locator(LISTING_CONTAINER_SELECTOR)
-        count = await listings.count()
-        logging.info(f"Found {count} listings on {url}")
+        # Company Names
+        names = await page.eval_on_selector_all(
+            'a.provider__title-link.directory_profile',
+            'els => els.map(el => el.textContent.trim())'
+        )
 
-        for i in range(count):
-            item = listings.nth(i)
-            block = item.locator(MAIN_INFO_SELECTOR).first
+        # Website Links
+        raw_links = await page.evaluate("""
+        () => {
+          const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+          return Array.from(document.querySelectorAll(selector)).map(el => {
+            const href = el.getAttribute("href");
+            let dest = null;
+            try {
+              const params = new URL(href, location.origin).searchParams;
+              dest = params.get("u") ? decodeURIComponent(params.get("u")) : null;
+            } catch {}
+            return dest;
+          });
+        }
+        """)
 
-            # Name
-            name = None
-            name_loc = block.locator(NAME_SELECTOR).first
-            if await name_loc.count() > 0:
-                raw_name = await name_loc.text_content()
-                name = clean_text(raw_name)
+        # Locations
+        locations = await page.eval_on_selector_all(
+            '.provider__highlights-item.sg-tooltip-v2.location',
+            'els => els.map(el => el.textContent.trim())'
+        )
 
-            # Website
-            website = None
-            link_loc = block.locator(WEBSITE_BUTTON_SELECTOR).first
-            if await link_loc.count() > 0:
-                href = await link_loc.get_attribute('href')
-                if href:
-                    from urllib.parse import parse_qs, unquote
-                    url_obj = urlparse(href)
-                    qs = parse_qs(url_obj.query).get('u', [])
-                    dest = unquote(qs[0]) if qs else href
-                    parsed = urlparse(dest)
-                    website = f"{parsed.scheme}://{parsed.netloc}"
+        await browser.close()
 
-            # Location
-            location = None
-            loc_loc = item.locator(LOCATION_SELECTOR).first
-            if await loc_loc.count() > 0:
-                raw_loc = await loc_loc.text_content()
-                location = clean_text(raw_loc)
+        results = []
+        for i, name in enumerate(names):
+            raw = raw_links[i] if i < len(raw_links) else None
+            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            loc = locations[i] if i < len(locations) else None
+            results.append({'company': name, 'website': website, 'location': loc})
 
-            if name:
-                results.append({'company': name, 'website': website, 'location': location})
-
-        await context.close()
-    except Exception as e:
-        logging.error(f"Error scraping {url}: {e}")
-    return results
+        return results
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    all_results = []
-    timeout = req.total_pages * 30  # e.g., 30s per page
-    try:
-        # Ensure endpoint doesn’t hang indefinitely
-        for page_num in range(1, req.total_pages + 1):
-            page_url = f"{req.base_url}?page={page_num}"
-            logging.info(f"Scraping page {page_num}: {page_url}")
-            page_results = await asyncio.wait_for(scrape_page(page_url), timeout=30)
-            all_results.extend(page_results)
-    except asyncio.TimeoutError:
-        logging.error("Page scraping timed out")
-        raise HTTPException(status_code=504, detail="Scraping timed out")
-
-    if not all_results:
+    tasks = []
+    for p in range(1, req.total_pages + 1):
+        tasks.append(scrape_page(f"{req.base_url}?page={p}"))
+    results = await asyncio.gather(*tasks)
+    flat = [item for sub in results for item in sub]
+    if not flat:
         raise HTTPException(status_code=204, detail="No data scraped.")
-
-    return {"count": len(all_results), "data": all_results}
+    return {"count": len(flat), "data": flat}
