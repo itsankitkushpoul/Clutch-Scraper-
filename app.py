@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
-import asyncio, random
+import random
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,9 +55,7 @@ async def scrape_page(url: str):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
-        context = await browser.new_context(
-            proxy={"server": proxy} if proxy else None
-        )
+        context = await browser.new_context(proxy={"server": proxy} if proxy else None)
         if ua:
             await context.set_extra_http_headers({'User-Agent': ua})
         page = await context.new_page()
@@ -106,13 +104,15 @@ async def scrape_page(url: str):
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    results = []
-    for p in range(1, req.total_pages + 1):
-        page_url = f"{req.base_url}?page={p}"
-        logging.info(f"Scraping page {p}: {page_url}")
+    all_results = []
+    # Fetch each page one after the other
+    for page_num in range(1, req.total_pages + 1):
+        page_url = f"{req.base_url}?page={page_num}"
+        logging.info(f"Scraping page {page_num}: {page_url}")
         page_results = await scrape_page(page_url)
-        results.extend(page_results)
+        all_results.extend(page_results)
 
-    if not results:
+    if not all_results:
         raise HTTPException(status_code=204, detail="No data scraped.")
-    return {"count": len(results), "data": results}
+
+    return {"count": len(all_results), "data": all_results}
