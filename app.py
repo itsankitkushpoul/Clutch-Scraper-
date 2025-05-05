@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
 import random
 from playwright.async_api import async_playwright
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
@@ -12,33 +12,38 @@ logging.basicConfig(level=logging.INFO)
 # Configuration
 HEADLESS = True
 USE_AGENT = True
-ENABLE_CORS = True
+ENABLE_CORS = True  # Toggle CORS on/off easily
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
     # Add more if needed
 ]
 PROXIES = [None]
 
+# Request schema
 class ScrapeRequest(BaseModel):
     base_url: HttpUrl
     total_pages: conint(gt=0, le=20) = 3
 
 app = FastAPI(title="Clutch Scraper API")
 
+# CORS settings
 if ENABLE_CORS:
-    frontend_domains = [
-        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-        "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-        "https://clutch-agency-explorer-ui.lovable.app"
-    ]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=frontend_domains,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    logging.info(f"CORS enabled for: {frontend_domains}")
+    try:
+        frontend_domains = [
+            "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+            "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
+            "https://clutch-agency-explorer-ui.lovable.app"
+        ]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=frontend_domains,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        logging.info(f"CORS enabled for: {frontend_domains}")
+    except Exception as e:
+        logging.error(f"Failed to add CORS middleware: {e}")
 
 @app.get("/health")
 def health():
@@ -50,7 +55,9 @@ async def scrape_page(url: str):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
-        context = await browser.new_context(proxy={"server": proxy} if proxy else None)
+        context = await browser.new_context(
+            proxy={"server": proxy} if proxy else None
+        )
         if ua:
             await context.set_extra_http_headers({'User-Agent': ua})
         page = await context.new_page()
@@ -58,43 +65,45 @@ async def scrape_page(url: str):
         await page.goto(url, timeout=120_000)
         await page.wait_for_load_state('networkidle')
 
-        # Grab each provider container in DOM order
-        containers = page.locator('div.provider-row')
-        count = await containers.count()
-        results = []
+        # Grab everything in one map, in DOM order
+        results = await page.evaluate("""
+        () => {
+          return Array.from(
+            document.querySelectorAll('a.provider__title-link.directory_profile')
+          ).map(anchor => {
+            const company = anchor.textContent.trim();
 
-        for i in range(count):
-            c = containers.nth(i)
-            name = (await c.locator('a.provider__title-link.directory_profile').text_content()).strip()
+            // Walk up to the nearest parent that contains both name, link, and location
+            const container = anchor.closest('[class*="provider"]');
 
-            # website link
-            href = await c.locator(
+            // Website link
+            let website = null;
+            if (container) {
+              const linkEl = container.querySelector(
                 'a.provider__cta-link.sg-button-v2--primary.website-link__item--non-ppc'
-            ).get_attribute('href')
-            dest = None
-            if href:
-                try:
-                    params = urlparse(href).query
-                    # sometimes they wrap real URL in ?u=...
-                    from urllib.parse import parse_qs, unquote
-                    q = parse_qs(params).get('u', [None])[0]
-                    dest = unquote(q) if q else href
-                except:
-                    dest = href
-            website = None
-            if dest:
-                parsed = urlparse(dest)
-                website = f"{parsed.scheme}://{parsed.netloc}"
+              );
+              if (linkEl) {
+                try {
+                  const urlObj = new URL(linkEl.href, location.origin);
+                  const real = urlObj.searchParams.get('u');
+                  website = real ? decodeURIComponent(real) : linkEl.href;
+                } catch {
+                  website = linkEl.href;
+                }
+              }
+            }
 
-            # location
-            loc_el = c.locator('.provider__highlights-item.sg-tooltip-v2.location')
-            location = (await loc_el.text_content()).strip() if await loc_el.count() else None
+            // Location
+            let locationText = null;
+            if (container) {
+              const locEl = container.querySelector('.provider__highlights-item.location');
+              if (locEl) locationText = locEl.textContent.trim();
+            }
 
-            results.append({
-                'company': name,
-                'website': website,
-                'location': location
-            })
+            return { company, website, location: locationText };
+          });
+        }
+        """)
 
         await browser.close()
         return results
