@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
 import asyncio, random, logging
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser, Playwright
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -49,128 +49,140 @@ if ENABLE_CORS:
 def health():
     return {"status": "ok"}
 
-async def scrape_page(url: str):
+# Globals for Playwright
+playwright: Playwright = None
+browser: Browser = None
+
+@app.on_event("startup")
+async def startup():
+    global playwright, browser
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(headless=HEADLESS)
+    logging.info("Playwright browser launched")
+
+@app.on_event("shutdown")
+async def shutdown():
+    await browser.close()
+    await playwright.stop()
+    logging.info("Playwright browser closed")
+
+async def scrape_page(url: str) -> list:
     ua = random.choice(USER_AGENTS) if USE_AGENT else None
     proxy = random.choice(PROXIES)
+    results = []
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=HEADLESS)
-            context = await browser.new_context(
-                proxy={"server": proxy} if proxy else None
-            )
-            if ua:
-                await context.set_extra_http_headers({'User-Agent': ua})
-            page = await context.new_page()
+        context = await browser.new_context(
+            proxy={"server": proxy} if proxy else None
+        )
+        if ua:
+            await context.set_extra_http_headers({'User-Agent': ua})
+        page = await context.new_page()
 
-            # Retry mechanism for page.goto()
-            retries = 3
-            while retries:
-                try:
-                    await page.goto(url, timeout=120_000)
-                    break
-                except Exception as e:
-                    retries -= 1
-                    logging.warning(f"Retrying {url}, {2 - retries} attempts left. Error: {e}")
-                    if retries == 0:
-                        logging.error(f"Failed to load {url} after retries.")
-                        await browser.close()
-                        return []
+        # Attempt to load page with retries
+        retries = 3
+        while retries:
+            try:
+                await page.goto(url, timeout=120_000)
+                break
+            except Exception as e:
+                retries -= 1
+                logging.warning(f"[{url}] load failed, retries left={retries}: {e}")
+                if not retries:
+                    await context.close()
+                    return []
+                await asyncio.sleep(1)
 
-            await page.wait_for_load_state('networkidle')
-            results = []
+        # Simple scroll to bottom to trigger lazy loads
+        await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+        await asyncio.sleep(random.uniform(1, 2))
+        await page.wait_for_load_state('networkidle')
 
-            # Regular listings
-            names = await page.eval_on_selector_all(
-                'a.provider__title-link.directory_profile',
-                'els => els.map(el => el.textContent.trim())'
-            )
-            raw_links = await page.evaluate("""
-                () => {
-                    const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-                    return Array.from(document.querySelectorAll(selector)).map(el => {
-                        const href = el.getAttribute("href");
-                        try {
-                            const params = new URL(href, location.origin).searchParams;
-                            return params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                        } catch {
-                            return null;
-                        }
-                    });
-                }
-            """)
-            locations = await page.eval_on_selector_all(
-                '.provider__highlights-item.sg-tooltip-v2.location',
-                'els => els.map(el => el.textContent.trim())'
-            )
+        # --- 1) Regular listings ---
+        names = await page.eval_on_selector_all(
+            'a.provider__title-link.directory_profile',
+            'els => els.map(el => el.textContent.trim())'
+        )
+        raw_links = await page.evaluate("""() => {
+            const sel = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+            return Array.from(document.querySelectorAll(sel)).map(el => {
+              const href = el.getAttribute("href");
+              try {
+                const p = new URL(href, location.origin).searchParams;
+                return p.get("u") ? decodeURIComponent(p.get("u")) : null;
+              } catch {
+                return null;
+              }
+            });
+        }""")
+        locations = await page.eval_on_selector_all(
+            '.provider__highlights-item.sg-tooltip-v2.location',
+            'els => els.map(el => el.textContent.trim())'
+        )
 
-            for i, name in enumerate(names):
-                raw = raw_links[i] if i < len(raw_links) else None
-                website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
-                loc = locations[i] if i < len(locations) else None
-                results.append({
-                    'company': name,
-                    'website': website,
-                    'location': loc,
-                    'featured': False
-                })
+        for i, name in enumerate(names):
+            raw = raw_links[i] if i < len(raw_links) else None
+            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            loc = locations[i] if i < len(locations) else None
+            results.append({
+                'company': name,
+                'website': website,
+                'location': loc,
+                'featured': False
+            })
 
-            # Featured listings
-            featured_names = await page.eval_on_selector_all(
-                'a.provider__title-link.ppc-website-link',
-                'els => els.map(el => el.textContent.trim())'
-            )
-            featured_raw_links = await page.evaluate("""
-                () => {
-                    const selector = "a.provider__cta-link.ppc_position--link";
-                    return Array.from(document.querySelectorAll(selector)).map(el => {
-                        const href = el.getAttribute("href");
-                        try {
-                            const params = new URL(href, location.origin).searchParams;
-                            return params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                        } catch {
-                            return null;
-                        }
-                    });
-                }
-            """)
-            featured_locs = await page.eval_on_selector_all(
-                'div.provider__highlights-item.sg-tooltip-v2.location',
-                'els => els.map(el => el.textContent.trim())'
-            )
+        # --- 2) Featured listings ---
+        featured_names = await page.eval_on_selector_all(
+            'a.provider__title-link.ppc-website-link',
+            'els => els.map(el => el.textContent.trim())'
+        )
+        featured_raw_links = await page.evaluate("""() => {
+            const sel = "a.provider__cta-link.ppc_position--link";
+            return Array.from(document.querySelectorAll(sel)).map(el => {
+              const href = el.getAttribute("href");
+              try {
+                const p = new URL(href, location.origin).searchParams;
+                return p.get("u") ? decodeURIComponent(p.get("u")) : null;
+              } catch {
+                return null;
+              }
+            });
+        }""")
+        featured_locs = await page.eval_on_selector_all(
+            'div.provider__highlights-item.sg-tooltip-v2.location',
+            'els => els.map(el => el.textContent.trim())'
+        )
 
-            for i, name in enumerate(featured_names):
-                raw = featured_raw_links[i] if i < len(featured_raw_links) else None
-                website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
-                loc = featured_locs[i] if i < len(featured_locs) else None
-                results.append({
-                    'company': name,
-                    'website': website,
-                    'location': loc,
-                    'featured': True
-                })
+        for i, name in enumerate(featured_names):
+            raw = featured_raw_links[i] if i < len(featured_raw_links) else None
+            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+            loc = featured_locs[i] if i < len(featured_locs) else None
+            results.append({
+                'company': name,
+                'website': website,
+                'location': loc,
+                'featured': True
+            })
 
-            await browser.close()
-            return results
+        await context.close()
+        logging.info(f"[{url}] scraped {len(results)} items")
+        # slight delay before next scrape
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        return results
 
     except Exception as e:
-        logging.error(f"Error scraping {url}: {e}")
+        logging.error(f"Unexpected error in scrape_page({url}): {e}")
+        try:
+            await context.close()
+        except: pass
         return []
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    tasks = [
-        scrape_page(f"{req.base_url}?page={p}")
-        for p in range(1, req.total_pages + 1)
-    ]
-
-    try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        # Flatten and filter out failed tasks
-        flat = [item for sublist in results if isinstance(sublist, list) for item in sublist]
-        if not flat:
-            raise HTTPException(status_code=204, detail="No data scraped.")
-        return {"count": len(flat), "data": flat}
-    except Exception as e:
-        logging.error(f"Scraping failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    urls = [f"{req.base_url}?page={p}" for p in range(1, req.total_pages + 1)]
+    tasks = [scrape_page(u) for u in urls]
+    pages = await asyncio.gather(*tasks)
+    flat = [item for sub in pages for item in sub]
+    if not flat:
+        raise HTTPException(status_code=204, detail="No data scraped.")
+    return {"count": len(flat), "data": flat}
