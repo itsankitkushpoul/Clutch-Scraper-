@@ -32,6 +32,7 @@ if ENABLE_CORS:
             "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
             "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
             "https://clutch-agency-explorer-ui.lovable.app"
+            "https://preview--clutch-agency-explorer-ui.lovable.app"
         ]
         app.add_middleware(
             CORSMiddleware,
