@@ -45,10 +45,7 @@ WORKDIR /app
 # Copy & install Python dependencies
 COPY requirements.txt .
 
-# 1) Upgrade pip
 RUN pip install --upgrade pip
-
-# 2) Install project requirements (this step is split so you’ll see exact pip errors)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers (Chromium, WebKit, Firefox)
