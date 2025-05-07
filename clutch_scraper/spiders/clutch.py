@@ -5,9 +5,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 class ClutchSpider(scrapy.Spider):
     name = "clutch"
-    custom_settings = {
-        "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": 120_000,
-    }
+    custom_settings = { "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": 120_000 }
 
     def __init__(self, base_url=None, total_pages=3, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -34,27 +32,23 @@ class ClutchSpider(scrapy.Spider):
             )
 
     def parse_page(self, response):
-        # Regular listings
         for sel in response.css("div.provider-row"):
             item = ClutchItem()
             item["company"] = sel.css("a.provider__title-link.directory_profile::text") \
                                   .get(default="").strip()
-            raw_href = sel.css("a.provider__cta-link.website-link__item--non-ppc::attr(href)") \
-                          .get()
-            item["website"] = self._extract_website(raw_href)
+            raw_href = sel.css("a.provider__cta-link.website-link__item--non-ppc::attr(href)").get()
+            item["website"]  = self._extract_website(raw_href)
             item["location"] = sel.css(".provider__highlights-item.location::text") \
                                    .get(default="").strip()
             item["featured"] = False
             yield item
 
-        # Featured listings
         for sel in response.css("div.provider-row.featured"):
             item = ClutchItem()
             item["company"] = sel.css("a.provider__title-link.ppc-website-link::text") \
                                   .get(default="").strip()
-            raw_href = sel.css("a.provider__cta-link.ppc_position--link::attr(href)") \
-                          .get()
-            item["website"] = self._extract_website(raw_href)
+            raw_href = sel.css("a.provider__cta-link.ppc_position--link::attr(href)").get()
+            item["website"]  = self._extract_website(raw_href)
             item["location"] = sel.css(".provider__highlights-item.location::text") \
                                    .get(default="").strip()
             item["featured"] = True
@@ -64,9 +58,8 @@ class ClutchSpider(scrapy.Spider):
         if not href:
             return None
         try:
-            # parse the "u" param in the query string
             qs = parse_qs(urlparse(href).query)
-            u = qs.get("u", [None])[0]
+            u  = qs.get("u", [None])[0]
             if not u:
                 return None
             decoded = unquote(u)
