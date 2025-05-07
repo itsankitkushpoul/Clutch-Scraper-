@@ -1,11 +1,12 @@
 # ── Stage 1: Base OS & Python setup ────────────────────────────────────────
 FROM python:3.11-slim AS base
 
+# Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PIP_NO_CACHE_DIR=1
 
-# Install OS packages (build tools + Playwright deps)
+# Install OS packages (build tools + Playwright deps + Scrapy deps)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential \
@@ -43,8 +44,12 @@ WORKDIR /app
 
 # Copy & install Python dependencies
 COPY requirements.txt .
-RUN pip install --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+
+# 1) Upgrade pip
+RUN pip install --upgrade pip
+
+# 2) Install project requirements (this step is split so you’ll see exact pip errors)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers (Chromium, WebKit, Firefox)
 RUN python -m playwright install --with-deps
@@ -55,6 +60,8 @@ FROM base AS runtime
 # Copy application code
 COPY . .
 
+# Expose the FastAPI port
 EXPOSE 8000
 
+# Start the FastAPI app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
