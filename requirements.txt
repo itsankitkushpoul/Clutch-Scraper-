@@ -2,3 +2,6 @@ fastapi==0.110.1
 uvicorn[standard]==0.29.0
 pydantic==2.6.4
 aiofiles==23.2.1
+scrapy==2.11.1
+scrapy-playwright==0.1.5
+playwright==1.51.0
