@@ -1,4 +1,5 @@
 fastapi
 uvicorn[standard]
-playwright
 pydantic
+pyppeteer>=1.0.0
+pyppeteer-cluster>=0.5.1
