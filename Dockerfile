@@ -44,21 +44,17 @@ WORKDIR /app
 
 # Copy & install Python dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright browsers (Chromium, WebKit, Firefox)
+# Install Playwright browsers
 RUN python -m playwright install --with-deps
 
 # ── Stage 2: Application Copy & Runtime ──────────────────────────────────
 FROM base AS runtime
 
-# Copy application code
 COPY . .
 
-# Expose the FastAPI port
 EXPOSE 8000
 
-# Start the FastAPI app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
