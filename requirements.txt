@@ -1,5 +1,5 @@
 fastapi
 uvicorn[standard]
-playwright
-pyppeteer-cluster
 pydantic
+playwright
+aiofiles
