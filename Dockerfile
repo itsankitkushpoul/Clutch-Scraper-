@@ -1,28 +1,24 @@
-# Use the official Playwright image with Python support
-FROM mcr.microsoft.com/playwright/python:1.35.0-focal
+# ─── Base Image ────────────────────────────────────────────────────────────────
+# Pin to a specific Playwright version for stability (e.g. 1.51.0)
+FROM mcr.microsoft.com/playwright/python:v1.51.0-jammy
 
-# Ensure we don’t accidentally cache pip layers
+# ─── Environment ───────────────────────────────────────────────────────────────
 ENV PIP_NO_CACHE_DIR=1
-
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Create and use /app as working directory
+# ─── App Directory ─────────────────────────────────────────────────────────────
 WORKDIR /app
 
-# Copy only requirements first (leveraging docker cache)
+# ─── Dependencies ──────────────────────────────────────────────────────────────
+# Copy & install Python dependencies
 COPY requirements.txt .
-
-# Install Python deps
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt
 
-# Copy the rest of your application code
+# ─── Copy Source ───────────────────────────────────────────────────────────────
 COPY . .
 
-# Expose port
+# ─── Expose Port & Start ───────────────────────────────────────────────────────
 EXPOSE 8000
-
-# Run FastAPI via Uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
