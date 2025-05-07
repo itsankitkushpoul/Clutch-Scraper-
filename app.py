@@ -6,20 +6,20 @@ from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-HEADLESS        = True
-MAX_CONCURRENT  = 5                # bump this up if your machine can handle it
-USER_AGENTS     = [
-    # real UA strings here
+HEADLESS         = True
+MAX_CONCURRENT   = 5   # tune this: 3–5 for safety, up to 10 if your machine can handle it
+USER_AGENTS      = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) … Chrome/114.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) … Version/15.6 Safari/605.1.15",
+    # add at least 8–10 more realistic UAs
 ]
-PROXIES         = [None]           # or ["http://user:pass@proxy:port", …]
-ENABLE_CORS     = True
+PROXIES          = [None]  # or ["http://user:pass@proxy1:port", ...]
+ENABLE_CORS      = True
 FRONTEND_ORIGINS = [
     "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
     "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
     "https://clutch-agency-explorer-ui.lovable.app",
-    "https://preview--clutch-agency-explorer-ui.lovable.app"
+    "https://preview--clutch-agency-explorer-ui.lovable.app",
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +46,7 @@ class ScrapeRequest(BaseModel):
     base_url: HttpUrl
     total_pages: conint(gt=0) = 3
 
-# ─── Global Browser & Context ──────────────────────────────────────────────────
+# ─── Globals for Playwright ────────────────────────────────────────────────────
 browser: Browser        = None
 context: BrowserContext = None
 
@@ -55,13 +55,8 @@ async def startup():
     global browser, context
     playwright = await async_playwright().start()
     browser   = await playwright.chromium.launch(headless=HEADLESS)
-    # Create one context for all pages—rotate proxy/UA here if you like
-    proxy = random.choice(PROXIES)
-    ua    = random.choice(USER_AGENTS)
-    context = await browser.new_context(
-        user_agent=ua,
-        proxy={"server": proxy} if proxy else None,
-    )
+    # Create one context for all pages: will rotate UA/proxy per page below
+    context = await browser.new_context()
     logging.info("▶ Playwright launched and context created")
 
 @app.on_event("shutdown")
@@ -72,7 +67,7 @@ async def shutdown():
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 async def auto_scroll(page: Page):
-    """Scroll to bottom in a loop until no more new content."""
+    """Scroll to bottom in a loop until no more new content loads."""
     prev_height = await page.evaluate("document.body.scrollHeight")
     while True:
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -83,77 +78,92 @@ async def auto_scroll(page: Page):
         prev_height = new_height
 
 async def scrape_page(page: Page, url: str) -> list:
-    """Scrape one URL using an existing Page instance."""
-    await page.set_extra_http_headers({"User-Agent": random.choice(USER_AGENTS)})
+    """Navigate, detect rate‐limit, scroll, extract, and return results."""
+    # Rotate UA and proxy per page
+    ua = random.choice(USER_AGENTS)
+    proxy = random.choice(PROXIES)
+    await page.context.set_extra_http_headers({"User-Agent": ua})
+    if proxy:
+        await page.context.set_proxy({"server": proxy})
+
     try:
         await page.goto(url, timeout=120_000)
     except Exception as e:
         logging.error(f"[{url}] failed to load: {e}")
         return []
 
-    # human‐like scroll & wait
+    content = await page.content()
+    if "rate limit" in content.lower() or "captcha" in content.lower():
+        logging.warning(f"[{url}] rate limited or CAPTCHA detected; backing off 60s")
+        await page.wait_for_timeout(60_000)
+        # try once more
+        try:
+            await page.goto(url, timeout=120_000)
+        except:
+            return []
+
+    # Trigger lazy‐loads
     await auto_scroll(page)
     await page.wait_for_load_state("networkidle")
 
-    # extract
-    names       = await page.eval_on_selector_all(
+    # Extract standard listings
+    names     = await page.eval_on_selector_all(
         "a.provider__title-link.directory_profile",
         "els => els.map(e => e.textContent.trim())"
     )
-    raw_links   = await page.evaluate(
+    raw_links = await page.evaluate(
         """() => Array.from(
               document.querySelectorAll(
                 'a.provider__cta-link.sg-button-v2--primary.website-link__item--non-ppc'))
             .map(el => {
               try {
-                let p = new URL(el.href, location.origin).searchParams.get("u");
-                return p ? decodeURIComponent(p) : null;
+                let u = new URL(el.href, location.origin).searchParams.get("u");
+                return u ? decodeURIComponent(u) : null;
               } catch { return null; }
             });"""
     )
-    locs        = await page.eval_on_selector_all(
+    locs      = await page.eval_on_selector_all(
         ".provider__highlights-item.sg-tooltip-v2.location",
         "els => els.map(e => e.textContent.trim())"
     )
 
-    # sanity check
+    # Sanity check
     if not (len(names) == len(raw_links) == len(locs)):
         logging.warning(
-            f"[{url}] selector mismatch: "
-            f"names={len(names)}, links={len(raw_links)}, locs={len(locs)}"
+            f"[{url}] selector mismatch: names={len(names)}, "
+            f"links={len(raw_links)}, locs={len(locs)}"
         )
 
-    out = []
+    results = []
     for i, name in enumerate(names):
         raw = raw_links[i] if i < len(raw_links) else None
         website = None
         if raw:
             p = urlparse(raw)
             website = f"{p.scheme}://{p.netloc}"
-        out.append({
+        results.append({
             "company": name,
             "website": website,
             "location": locs[i] if i < len(locs) else None,
             "featured": False
         })
 
-    # featured
-    f_names      = await page.eval_on_selector_all(
+    # Extract featured listings
+    f_names     = await page.eval_on_selector_all(
         "a.provider__title-link.ppc-website-link",
         "els => els.map(e => e.textContent.trim())"
     )
-    f_raw_links  = await page.evaluate(
+    f_raw_links = await page.evaluate(
         """() => Array.from(
-              document.querySelectorAll(
-                'a.provider__cta-link.ppc_position--link'))
+              document.querySelectorAll('a.provider__cta-link.ppc_position--link'))
             .map(el => {
               try {
-                let p = new URL(el.href, location.origin).searchParams.get("u");
-                return p ? decodeURIComponent(p) : null;
+                let u = new URL(el.href, location.origin).searchParams.get("u");
+                return u ? decodeURIComponent(u) : null;
               } catch { return null; }
             });"""
     )
-    f_locs       = await page.eval_on_selector_all(
+    f_locs      = await page.eval_on_selector_all(
         "div.provider__highlights-item.sg-tooltip-v2.location",
         "els => els.map(e => e.textContent.trim())"
     )
@@ -164,34 +174,50 @@ async def scrape_page(page: Page, url: str) -> list:
         if raw:
             p = urlparse(raw)
             website = f"{p.scheme}://{p.netloc}"
-        out.append({
+        results.append({
             "company": name,
             "website": website,
             "location": f_locs[i] if i < len(f_locs) else None,
             "featured": True
         })
 
-    logging.info(f"[{url}] scraped {len(out)} entries")
-    return out
+    logging.info(f"[{url}] scraped {len(results)} entries")
+    return results
 
-# ─── Endpoint ────────────────────────────────────────────────────────────────
+# ─── Scrape Endpoint with Bounded Queue ───────────────────────────────────────
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    # build page URLs
     urls = [f"{req.base_url}?page={i}" for i in range(1, req.total_pages + 1)]
     results = []
 
-    async def worker(u: str):
-        async with semaphore:
-            page = await context.new_page()
-            try:
-                data = await scrape_page(page, u)
-            finally:
-                await page.close()
-            return data
+    queue = asyncio.Queue()
+    for u in urls:
+        await queue.put(u)
 
-    pages = await asyncio.gather(*[worker(u) for u in urls])
-    results = [item for sub in pages for item in sub]
+    async def worker(name: str):
+        while True:
+            try:
+                url = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            async with semaphore:
+                page = await context.new_page()
+                try:
+                    data = await scrape_page(page, url)
+                    results.extend(data)
+                except Exception as e:
+                    logging.error(f"[{name}] error on {url}: {e}")
+                finally:
+                    await page.close()
+                    # random delay to avoid bans
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+            queue.task_done()
+
+    # spawn workers
+    workers = [asyncio.create_task(worker(f"W{i}")) for i in range(MAX_CONCURRENT)]
+    await queue.join()
+    for w in workers:
+        w.cancel()
 
     if not results:
         raise HTTPException(status_code=204, detail="No data scraped")
