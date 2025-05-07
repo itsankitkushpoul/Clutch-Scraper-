@@ -9,10 +9,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for Playwright Chromium
+# Install system dependencies required by Playwright
 RUN apt-get update && apt-get install -y \
     wget \
-    gnupg \
     curl \
     unzip \
     libasound2 \
@@ -42,14 +41,14 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright and its dependencies (including browser binaries)
+# Install Playwright and its browser dependencies
 RUN playwright install --with-deps
 
 # Copy application source code
 COPY . .
 
-# Expose app port
+# Expose the app port
 EXPOSE 8000
 
-# Start FastAPI using Uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use Uvicorn to serve the app
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
