@@ -1,12 +1,12 @@
-# ── Stage 1: Base OS & Python setup ────────────────────────────────────────
-FROM python:3.11-slim AS builder
+# ── Stage 1: Build with full Debian slim ────────────────────────────────────
+FROM python:3.11-slim-bullseye AS builder
 
 # Environment
 ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PIP_NO_CACHE_DIR=1
 
-# Install OS-level build deps (for Twisted, lxml, etc.) and Playwright runtime deps
+# Install system build deps + Playwright runtime deps
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential \
@@ -15,6 +15,10 @@ RUN apt-get update \
       libssl-dev \
       libxml2-dev \
       libxslt1-dev \
+      libjpeg-dev \
+      zlib1g-dev \
+      libpq-dev \
+      cargo \
       wget \
       curl \
       gnupg \
@@ -42,7 +46,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy and install Python dependencies
+# Copy & install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip \
  && pip install --no-cache-dir -r requirements.txt
@@ -50,16 +54,19 @@ RUN pip install --upgrade pip \
 # Install Playwright browsers
 RUN python -m playwright install --with-deps
 
-# ── Stage 2: Runtime image ────────────────────────────────────────────────
-FROM python:3.11-slim AS runtime
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────
+FROM python:3.11-slim-bullseye
 
-# Copy only what's needed from builder
+ENV PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Copy installed packages & browsers from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /ms-playwright /ms-playwright
 
 WORKDIR /app
 COPY . .
 
 EXPOSE 8000
-
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
