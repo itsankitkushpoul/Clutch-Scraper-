@@ -9,9 +9,13 @@ ENV PIP_NO_CACHE_DIR=1
 # ─── Set up working directory ──────────────────────────────────────────────────
 WORKDIR /app
 
-# ─── Install dependencies ─────────────────────────────────────────────────────
-# Install system dependencies for Playwright browsers
+# ─── Install system dependencies for common Python packages ──────────────────
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+    libpq-dev \
     wget \
     gnupg \
     curl \
@@ -38,10 +42,12 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# ─── Install Python dependencies ───────────────────────────────────────────────
+# ─── Copy requirements.txt ─────────────────────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+
+# ─── Upgrade pip and install Python dependencies ─────────────────────────────
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
 # ─── Install Playwright and its browsers ───────────────────────────────────────
 RUN pip install playwright && \
