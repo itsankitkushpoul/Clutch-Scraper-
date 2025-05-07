@@ -1,4 +1,4 @@
-# Use the official Python base image
+# Use the official Python slim base image
 FROM python:3.11-slim
 
 # Set environment variables
@@ -9,13 +9,12 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies for Playwright Chromium
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     curl \
     unzip \
-    fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -27,7 +26,14 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
+    libxss1 \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxtst6 \
+    fonts-liberation \
     xdg-utils \
+    ca-certificates \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
@@ -36,15 +42,14 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright and its dependencies
-RUN pip install playwright && \
-    playwright install --with-deps
+# Install Playwright and its dependencies (including browser binaries)
+RUN playwright install --with-deps
 
-# Copy application code
+# Copy application source code
 COPY . .
 
-# Expose the application port
+# Expose app port
 EXPOSE 8000
 
-# Start the FastAPI application
+# Start FastAPI using Uvicorn
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
