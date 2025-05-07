@@ -1,14 +1,19 @@
-# Use official Python 3.11 slim image
-FROM python:3.11-slim
+# ── Stage 1: Base OS & Python setup ────────────────────────────────────────
+FROM python:3.11-slim AS base
 
-# Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PIP_NO_CACHE_DIR=1
 
-# Install OS-level dependencies required for Playwright
+# Install OS packages (build tools + Playwright deps)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      build-essential \
+      libffi-dev \
+      libxml2-dev \
+      libxslt1-dev \
+      libssl-dev \
+      python3-dev \
       wget \
       curl \
       gnupg \
@@ -34,24 +39,22 @@ RUN apt-get update \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy dependency file
+# Copy & install Python dependencies
 COPY requirements.txt .
-
-# Upgrade pip & install Python packages (verbose, no cache)
 RUN pip install --upgrade pip \
- && pip install --no-cache-dir -vvv -r requirements.txt
+ && pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers (with dependencies)
+# Install Playwright browsers (Chromium, WebKit, Firefox)
 RUN python -m playwright install --with-deps
 
-# Copy the rest of the app source code
+# ── Stage 2: Application Copy & Runtime ──────────────────────────────────
+FROM base AS runtime
+
+# Copy application code
 COPY . .
 
-# Expose port (adjust if needed)
 EXPOSE 8000
 
-# Command to run the FastAPI app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
