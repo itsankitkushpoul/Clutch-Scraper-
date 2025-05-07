@@ -4,4 +4,4 @@ pydantic
 aiofiles
 scrapy>=2.8
 scrapy-playwright>=0.1.5
-playwright>=1.35.0
+playwright==1.51.0
