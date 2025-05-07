@@ -3,7 +3,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, conint
 
-# ─── Configuration ─────────────────────────────────────────────────────────────
 ENABLE_CORS      = True
 FRONTEND_ORIGINS = [
     "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
