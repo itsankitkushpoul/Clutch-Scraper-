@@ -1,7 +1,7 @@
 # ─── Start with official Python 3.11 image ─────────────────────────────────────
 FROM python:3.11-slim
 
-# ─── Environment settings ──────────────────────────────────────────────────────
+# ─── Set environment variables ──────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PIP_NO_CACHE_DIR=1
@@ -47,7 +47,7 @@ COPY requirements.txt .
 
 # ─── Upgrade pip and install Python dependencies ─────────────────────────────
 RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ─── Install Playwright and its browsers ───────────────────────────────────────
 RUN pip install playwright && \
