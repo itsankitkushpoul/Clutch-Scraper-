@@ -1,3 +1,4 @@
+import os                      # ← add this
 import subprocess
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,10 +6,8 @@ from pydantic import BaseModel, HttpUrl, conint
 
 ENABLE_CORS = True
 FRONTEND_ORIGINS = [
-    "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-    "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-    "https://clutch-agency-explorer-ui.lovable.app",
-    "https://preview--clutch-agency-explorer-ui.lovable.app",
+    "https://…",
+    # etc.
 ]
 
 app = FastAPI(title="Clutch Scraper Controller")
@@ -37,10 +36,19 @@ async def run_scrapy(req: ScrapeRequest):
         "-a", f"base_url={req.base_url}",
         "-a", f"total_pages={req.total_pages}"
     ]
-    # ✅ FIXED: point to the correct directory containing scrapy.cfg
-    proc = subprocess.run(cmd, cwd="Clutch-Scraper--main", capture_output=True, text=True)
-    
+
+    # ─── NEW ──────────────────────────────────────────────────────────────
+    # project_dir now points at the folder containing this app.py (and scrapy.cfg)
+    project_dir = os.path.dirname(__file__)
+    proc = subprocess.run(
+        cmd,
+        cwd=project_dir,
+        capture_output=True,
+        text=True
+    )
+    # ──────────────────────────────────────────────────────────────────────
+
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=proc.stderr)
-    
+
     return {"status": "ok", "output_file": "results.json"}
