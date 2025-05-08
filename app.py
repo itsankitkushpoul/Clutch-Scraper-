@@ -48,6 +48,10 @@ async def run_scrapy(req: ScrapeRequest):
         text=True
     )
 
+    # Print stdout and stderr for debugging
+    print("STDOUT:\n", proc.stdout)
+    print("STDERR:\n", proc.stderr)
+
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=proc.stderr)
 
