@@ -1,3 +1,10 @@
+# clutch_scraper/settings.py
+
+BOT_NAME = "clutch_scraper"
+
+SPIDER_MODULES = ["clutch_scraper.spiders"]
+NEWSPIDER_MODULE = "clutch_scraper.spiders"
+
 DOWNLOADER_MIDDLEWARES = {
     "scrapy_playwright.middleware.ScrapyPlaywrightDownloadHandler": 800,
 }
