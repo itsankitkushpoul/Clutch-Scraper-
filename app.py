@@ -1,5 +1,6 @@
 import os
 import subprocess
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -55,7 +56,14 @@ async def run_scrapy(req: ScrapeRequest):
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=proc.stderr)
 
-    return {"status": "ok", "output_file": "results.json"}
+    # Read and return the results.json content
+    results_path = os.path.join(project_dir, "results.json")
+    if os.path.exists(results_path):
+        with open(results_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"status": "ok", "count": len(data), "data": data}
+    else:
+        raise HTTPException(status_code=404, detail="results.json not found")
 
 @app.get("/download")
 def download_results():
