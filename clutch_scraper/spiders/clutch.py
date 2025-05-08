@@ -32,23 +32,34 @@ class ClutchSpider(scrapy.Spider):
             )
 
     def parse_page(self, response):
+        self.logger.info("First 1000 chars of HTML: %s", response.text[:1000])
+        found_regular = 0
         for sel in response.css("div.provider-row"):
+            self.logger.info("Found a regular provider row!")
             item = ClutchItem()
             item["company"] = sel.css("a.provider__title-link.directory_profile::text").get(default="").strip()
             raw_href = sel.css("a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc::attr(href)").get()
             item["website"] = self._extract_website(raw_href)
             item["location"] = sel.css(".provider__highlights-item.sg-tooltip-v2.location::text").get(default="").strip()
             item["featured"] = False
+            self.logger.info(f"Yielding item: {item}")
+            found_regular += 1
             yield item
+        self.logger.info(f"Total regular provider rows found: {found_regular}")
 
+        found_featured = 0
         for sel in response.css("div.provider-row.featured"):
+            self.logger.info("Found a featured provider row!")
             item = ClutchItem()
             item["company"] = sel.css("a.provider__title-link.ppc-website-link::text").get(default="").strip()
             raw_href = sel.css("a.provider__cta-link.ppc_position--link::attr(href)").get()
             item["website"] = self._extract_website(raw_href)
             item["location"] = sel.css("div.provider__highlights-item.sg-tooltip-v2.location::text").get(default="").strip()
             item["featured"] = True
+            self.logger.info(f"Yielding featured item: {item}")
+            found_featured += 1
             yield item
+        self.logger.info(f"Total featured provider rows found: {found_featured}")
 
     def _extract_website(self, href):
         if not href:
