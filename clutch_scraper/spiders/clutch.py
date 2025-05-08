@@ -2,6 +2,8 @@ import scrapy
 from scrapy_playwright.page import PageMethod
 from clutch_scraper.items import ClutchItem
 from urllib.parse import urlparse, parse_qs, unquote
+import subprocess
+from fastapi import HTTPException
 
 class ClutchSpider(scrapy.Spider):
     name = "clutch"
