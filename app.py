@@ -37,7 +37,9 @@ async def run_scrapy(req: ScrapeRequest):
     cmd = [
         "scrapy", "crawl", "clutch",
         "-a", f"base_url={req.base_url}",
-        "-a", f"total_pages={req.total_pages}"
+        "-a", f"total_pages={req.total_pages}",
+        "-o", "results.json",  # Ensure results are saved
+        "-t", "json"           # Explicitly set output format
     ]
 
     project_dir = os.path.dirname(__file__)
