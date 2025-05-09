@@ -1,5 +1,4 @@
 fastapi
-uvicorn[standard]
+uvicorn
 pydantic
 playwright
-python-dotenv     # if you choose to load env vars from .env
