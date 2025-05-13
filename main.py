@@ -25,12 +25,12 @@ class ScrapeRequest(BaseModel):
 app = FastAPI(title="Clutch Scraper API")
 
 if ENABLE_CORS:
-     frontend_domains = [
-            "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-            "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-            "https://clutch-agency-explorer-ui.lovable.app",
-            "https://preview--clutch-agency-explorer-ui.lovable.app"
-        ]
+    frontend_domains = [
+        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+        "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
+        "https://clutch-agency-explorer-ui.lovable.app",
+        "https://preview--clutch-agency-explorer-ui.lovable.app"
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=frontend_domains,
