@@ -163,7 +163,21 @@ async def scrape_single_page(pw, base_url: str, page_num: int, context=None, bro
     """
     ua = random.choice(USER_AGENTS)
     proxy = random.choice(PROXIES)
-    url = f"{base_url}?page={page_num}" if '?' not in base_url else f"{base_url}&page={page_num}"
+    
+    # Handle URL construction for pagination
+    from urllib.parse import urlparse, urlencode, parse_qsl
+    
+    # Parse the URL and query parameters
+    parsed = urlparse(base_url)
+    query_params = dict(parse_qsl(parsed.query))
+    
+    # Update or add the page parameter
+    query_params['page'] = str(page_num)
+    
+    # Reconstruct the URL with the new query parameters
+    url = parsed._replace(query=urlencode(query_params)).geturl()
+    
+    logging.debug(f"Scraping URL: {url}")
     
     # Use existing context and browser if provided
     close_browser = False
@@ -207,7 +221,15 @@ async def scrape_single_page(pw, base_url: str, page_num: int, context=None, bro
         logging.info(f"Loading {url} (attempt 1)")
         
         # Navigate with timeout and wait for the main content
-        await page.goto(url, timeout=REQUEST_TIMEOUT, wait_until='domcontentloaded')
+        logging.info(f"Navigating to: {url}")
+        try:
+            response = await page.goto(url, timeout=REQUEST_TIMEOUT, wait_until='domcontentloaded')
+            if response.status != 200:
+                logging.warning(f"Received status {response.status} for {url}")
+                return [], True, context, browser
+        except Exception as e:
+            logging.error(f"Error navigating to {url}: {str(e)}")
+            return [], True, context, browser
         
         # Wait for either the content to load or a captcha to appear
         try:
@@ -232,10 +254,21 @@ async def scrape_single_page(pw, base_url: str, page_num: int, context=None, bro
             return [], True, None, None
         
         # Check if we're on the last page
-        is_last = await is_last_page(page)
+        is_last = await is_last_page(page) or page_num >= 20  # Safety limit
         
         # Extract data
         result = await extract_full_page_data(page, url)
+        
+        # Verify we got results
+        if not result and page_num > 1:
+            logging.warning(f"No results found on page {page_num}, assuming last page")
+            is_last = True
+        
+        # Debug: Print first company name to verify different pages
+        if result:
+            logging.info(f"Page {page_num} - First result: {result[0].get('company', 'N/A')}")
+        else:
+            logging.warning(f"No results found on page {page_num}")
         
         # Random delay between requests to appear more human-like
         if not is_last:
