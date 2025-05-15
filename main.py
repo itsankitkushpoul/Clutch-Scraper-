@@ -1,40 +1,26 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
-import asyncio
-import random
-import logging
-import time
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from urllib.parse import urlparse, urljoin
+import asyncio, random, logging
+from playwright.async_api import async_playwright
+from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any, Optional
 
-# Enable basic logging
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 
 # Configuration
 HEADLESS = True
+USE_AGENT = True
 ENABLE_CORS = True
-MAX_CONCURRENT_TASKS = 3  # Reduced to avoid overwhelming the server
-RETRIES = 3
-REQUEST_TIMEOUT = 60000  # 60 seconds
-PAGE_LOAD_TIMEOUT = 30000  # 30 seconds
-DELAY_BETWEEN_REQUESTS = (2, 5)  # Random delay range in seconds
-
-# More realistic user agents
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)...",
+    "Mozilla/5.0 (X11; Linux x86_64)...",
+    # Add more realistic UA strings
 ]
+PROXIES = [None]  # Replace with working proxies like 'http://user:pass@proxyserver:port'
 
-# Add working proxies if available, else keep as [None]
-# Format: "http://user:pass@host:port" or "socks5://user:pass@host:port"
-PROXIES = [None]
-
-# Request schema
+# Request model
 class ScrapeRequest(BaseModel):
     base_url: HttpUrl
     total_pages: conint(gt=0, le=20) = 3
@@ -42,346 +28,163 @@ class ScrapeRequest(BaseModel):
 # FastAPI app
 app = FastAPI(title="Clutch Scraper API")
 
-# CORS settings
+# Enable CORS
 if ENABLE_CORS:
-    try:
-        frontend_domains = [
-            "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
-            "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
-            "https://clutch-agency-explorer-ui.lovable.app",
-            "https://preview--clutch-agency-explorer-ui.lovable.app"
-        ]
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=frontend_domains,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-        logging.info(f"CORS enabled for: {frontend_domains}")
-    except Exception as e:
-        logging.error(f"Failed to add CORS middleware: {e}")
+    frontend_domains = [
+        "https://e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovableproject.com",
+        "https://id-preview--e51cf8eb-9b6c-4f29-b00d-077534d53b9d.lovable.app",
+        "https://clutch-agency-explorer-ui.lovable.app",
+        "https://preview--clutch-agency-explorer-ui.lovable.app"
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=frontend_domains,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logging.info(f"CORS enabled for: {frontend_domains}")
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-async def extract_full_page_data(page, url):
-    from urllib.parse import urlparse
+async def scrape_page(url: str):
+    ua = random.choice(USER_AGENTS) if USE_AGENT else None
+    proxy = random.choice(PROXIES)
+
+    logging.info(f"Scraping: {url} | Proxy: {proxy} | UA: {ua}")
+
     try:
-        results = []
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=HEADLESS)
+            context = await browser.new_context(
+                proxy={"server": proxy} if proxy else None
+            )
+            if ua:
+                await context.set_extra_http_headers({'User-Agent': ua})
+            page = await context.new_page()
 
-        # Regular listings
-        names = await page.eval_on_selector_all(
-            'a.provider__title-link.directory_profile',
-            'els => els.map(el => el.textContent.trim())'
-        )
-        raw_links = await page.evaluate("""
-            () => {
-                const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
-                return Array.from(document.querySelectorAll(selector)).map(el => {
-                    const href = el.getAttribute("href");
-                    try {
-                        const params = new URL(href, location.origin).searchParams;
-                        return params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                    } catch {
-                        return null;
-                    }
-                });
-            }
-        """)
-        locations = await page.eval_on_selector_all(
-            '.provider__highlights-item.sg-tooltip-v2.location',
-            'els => els.map(el => el.textContent.trim())'
-        )
+            retries = 3
+            while retries:
+                try:
+                    await page.goto(url, timeout=120_000)
+                    break
+                except Exception as e:
+                    retries -= 1
+                    logging.warning(f"Retrying {url} ({2 - retries}/3). Error: {e}")
+                    if retries == 0:
+                        logging.error(f"Failed to load {url}")
+                        await browser.close()
+                        return []
 
-        for i, name in enumerate(names):
-            raw = raw_links[i] if i < len(raw_links) else None
-            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
-            loc = locations[i] if i < len(locations) else None
-            results.append({
-                'company': name,
-                'website': website,
-                'location': loc,
-                'featured': False
-            })
+            await page.wait_for_load_state('networkidle')
 
-        # Featured listings
-        featured_names = await page.eval_on_selector_all(
-            'a.provider__title-link.ppc-website-link',
-            'els => els.map(el => el.textContent.trim())'
-        )
-        featured_raw_links = await page.evaluate("""
-            () => {
-                const selector = "a.provider__cta-link.ppc_position--link";
-                return Array.from(document.querySelectorAll(selector)).map(el => {
-                    const href = el.getAttribute("href");
-                    try {
-                        const params = new URL(href, location.origin).searchParams;
-                        return params.get("u") ? decodeURIComponent(params.get("u")) : null;
-                    } catch {
-                        return null;
-                    }
-                });
-            }
-        """)
-        featured_locs = await page.eval_on_selector_all(
-            'div.provider__highlights-item.sg-tooltip-v2.location',
-            'els => els.map(el => el.textContent.trim())'
-        )
+            results = []
 
-        for i, name in enumerate(featured_names):
-            raw = featured_raw_links[i] if i < len(featured_raw_links) else None
-            website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
-            loc = featured_locs[i] if i < len(featured_locs) else None
-            results.append({
-                'company': name,
-                'website': website,
-                'location': loc,
-                'featured': True
-            })
+            # Regular listings
+            names = await page.eval_on_selector_all(
+                'a.provider__title-link.directory_profile',
+                'els => els.map(el => el.textContent.trim())'
+            )
+            raw_links = await page.evaluate("""
+                () => {
+                    const selector = "a.provider__cta-link.sg-button-v2.sg-button-v2--primary.website-link__item.website-link__item--non-ppc";
+                    return Array.from(document.querySelectorAll(selector)).map(el => {
+                        const href = el.getAttribute("href");
+                        try {
+                            const params = new URL(href, location.origin).searchParams;
+                            return params.get("u") ? decodeURIComponent(params.get("u")) : null;
+                        } catch {
+                            return null;
+                        }
+                    });
+                }
+            """)
+            locations = await page.eval_on_selector_all(
+                '.provider__highlights-item.sg-tooltip-v2.location',
+                'els => els.map(el => el.textContent.trim())'
+            )
 
-        return results
+            for i, name in enumerate(names):
+                raw = raw_links[i] if i < len(raw_links) else None
+                website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+                loc = locations[i] if i < len(locations) else None
+                results.append({
+                    'company': name,
+                    'website': website,
+                    'location': loc,
+                    'featured': False
+                })
+
+            # Featured listings
+            featured_names = await page.eval_on_selector_all(
+                'a.provider__title-link.ppc-website-link',
+                'els => els.map(el => el.textContent.trim())'
+            )
+            featured_raw_links = await page.evaluate("""
+                () => {
+                    const selector = "a.provider__cta-link.ppc_position--link";
+                    return Array.from(document.querySelectorAll(selector)).map(el => {
+                        const href = el.getAttribute("href");
+                        try {
+                            const params = new URL(href, location.origin).searchParams;
+                            return params.get("u") ? decodeURIComponent(params.get("u")) : null;
+                        } catch {
+                            return null;
+                        }
+                    });
+                }
+            """)
+            featured_locs = await page.eval_on_selector_all(
+                'div.provider__highlights-item.sg-tooltip-v2.location',
+                'els => els.map(el => el.textContent.trim())'
+            )
+
+            for i, name in enumerate(featured_names):
+                raw = featured_raw_links[i] if i < len(featured_raw_links) else None
+                website = f"{urlparse(raw).scheme}://{urlparse(raw).netloc}" if raw else None
+                loc = featured_locs[i] if i < len(featured_locs) else None
+                results.append({
+                    'company': name,
+                    'website': website,
+                    'location': loc,
+                    'featured': True
+                })
+
+            await browser.close()
+            return results
 
     except Exception as e:
-        logging.error(f"Failed to extract full page data from {url}: {e}")
+        logging.error(f"Scrape error on {url}: {e}")
         return []
 
-async def is_last_page(page) -> bool:
-    """Check if the current page is the last page of results."""
-    try:
-        next_button = await page.query_selector('li.page-item.next:not(.disabled) a.page-link[rel="next"]')
-        return next_button is None
-    except Exception as e:
-        logging.warning(f"Error checking for last page: {e}")
-        return True
-
-async def scrape_single_page(pw, base_url: str, page_num: int, context=None, browser=None) -> tuple[list[dict], bool, Optional[Any], Optional[Any]]:
-    """
-    Scrape a single page of results.
-    Returns a tuple of (results, is_last_page, context, browser)
-    """
-    ua = random.choice(USER_AGENTS)
-    proxy = random.choice(PROXIES)
-    
-    # Handle URL construction for pagination
-    from urllib.parse import urlparse, urlencode, parse_qsl
-    
-    # Parse the URL and query parameters
-    parsed = urlparse(base_url)
-    query_params = dict(parse_qsl(parsed.query))
-    
-    # Update or add the page parameter
-    query_params['page'] = str(page_num)
-    
-    # Reconstruct the URL with the new query parameters
-    url = parsed._replace(query=urlencode(query_params)).geturl()
-    
-    logging.debug(f"Scraping URL: {url}")
-    
-    # Use existing context and browser if provided
-    close_browser = False
-    if context is None or browser is None:
-        close_browser = True
-        browser = await pw.chromium.launch(
-            headless=HEADLESS,
-            args=['--disable-blink-features=AutomationControlled']
-        )
-        context = await browser.new_context(
-            user_agent=ua,
-            viewport={'width': random.randint(1200, 1600), 'height': random.randint(800, 1200)},
-            proxy={"server": proxy} if proxy else None,
-            # Disable WebDriver flag
-            java_script_enabled=True,
-            bypass_csp=True
-        )
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
-    
-    page = None
-    try:
-        page = await context.new_page()
-        
-        # Set extra headers to appear more like a real browser
-        await page.set_extra_http_headers({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://www.google.com/'
-        })
-        
-        # Randomize viewport size and other browser properties
-        await page.set_viewport_size({
-            'width': random.randint(1200, 1920),
-            'height': random.randint(800, 1080)
-        })
-        
-        logging.info(f"Loading {url} (attempt 1)")
-        
-        # Navigate with timeout and wait for the main content
-        logging.info(f"Navigating to: {url}")
-        try:
-            response = await page.goto(url, timeout=REQUEST_TIMEOUT, wait_until='domcontentloaded')
-            if response.status != 200:
-                logging.warning(f"Received status {response.status} for {url}")
-                return [], True, context, browser
-        except Exception as e:
-            logging.error(f"Error navigating to {url}: {str(e)}")
-            return [], True, context, browser
-        
-        # Wait for either the content to load or a captcha to appear
-        try:
-            await asyncio.wait_for(
-                page.wait_for_selector('.provider-row, .provider__title-link, .captcha', state='visible', timeout=PAGE_LOAD_TIMEOUT),
-                timeout=PAGE_LOAD_TIMEOUT / 1000 + 5
-            )
-        except (PlaywrightTimeoutError, asyncio.TimeoutError):
-            logging.warning(f"Timeout waiting for content on {url}")
-            if close_browser:
-                await context.close()
-                await browser.close()
-            return [], True, None, None
-        
-        # Check for captcha
-        captcha = await page.query_selector('.captcha, #captcha')
-        if captcha:
-            logging.warning("Captcha detected. Please solve it manually or use a proxy.")
-            if close_browser:
-                await context.close()
-                await browser.close()
-            return [], True, None, None
-        
-        # Check if we're on the last page
-        is_last = await is_last_page(page) or page_num >= 20  # Safety limit
-        
-        # Extract data
-        result = await extract_full_page_data(page, url)
-        
-        # Verify we got results
-        if not result and page_num > 1:
-            logging.warning(f"No results found on page {page_num}, assuming last page")
-            is_last = True
-        
-        # Debug: Print first company name to verify different pages
-        if result:
-            logging.info(f"Page {page_num} - First result: {result[0].get('company', 'N/A')}")
-        else:
-            logging.warning(f"No results found on page {page_num}")
-        
-        # Random delay between requests to appear more human-like
-        if not is_last:
-            delay = random.uniform(*DELAY_BETWEEN_REQUESTS)
-            logging.info(f"Waiting {delay:.2f} seconds before next request...")
-            await asyncio.sleep(delay)
-        
-        if close_browser:
-            await context.close()
-            await browser.close()
-            return result, is_last, None, None
-        else:
-            return result, is_last, context, browser
-            
-    except Exception as e:
-        logging.error(f"Error on {url}: {str(e)}")
-        if page:
-            await page.screenshot(path=f'error_page_{page_num}.png')
-        if close_browser and browser:
-            await context.close()
-            await browser.close()
-        return [], True, None, None
-    finally:
-        if page and close_browser:
-            await page.close()
-
-async def scrape_with_retry(pw, base_url: str, max_pages: int = 20) -> List[Dict]:
-    """Scrape multiple pages with retry logic and proper session management."""
-    results = []
-    page_num = 1
-    context = None
-    browser = None
-    
-    try:
-        async with async_playwright() as pw_session:
-            while page_num <= max_pages:
-                logging.info(f"Scraping page {page_num}...")
-                
-                # Scrape the current page
-                page_results, is_last_page, context, browser = await scrape_single_page(
-                    pw_session, base_url, page_num, context, browser
-                )
-                
-                # Add results if any
-                if page_results:
-                    results.extend(page_results)
-                    logging.info(f"Found {len(page_results)} results on page {page_num}")
-                else:
-                    logging.warning(f"No results found on page {page_num}")
-                
-                # Stop if we've reached the last page or max pages
-                if is_last_page or page_num >= max_pages:
-                    logging.info(f"Reached the last page or max pages at page {page_num}")
-                    break
-                    
-                page_num += 1
-                
-                # Random delay between pages
-                delay = random.uniform(*DELAY_BETWEEN_REQUESTS)
-                await asyncio.sleep(delay)
-                
-    except Exception as e:
-        logging.error(f"Error during scraping: {str(e)}")
-    finally:
-        # Clean up resources
-        if context:
-            await context.close()
-        if browser:
-            await browser.close()
-    
-    return results
-
 @app.post("/scrape")
-async def scrape_data(req: ScrapeRequest):
-    base_url = str(req.base_url)
-    total_pages = min(req.total_pages, 50)  # Limit to 50 pages max for safety
-    
-    # Validate the base URL
-    if not base_url.startswith(('http://', 'https://')):
-        raise HTTPException(status_code=400, detail="Invalid URL. Must start with http:// or https://")
-    
-    if 'clutch.co' not in base_url:
-        logging.warning("This scraper is specifically designed for clutch.co. Results may be unexpected.")
-    
-    logging.info(f"Starting scrape of {base_url} for {total_pages} pages")
-    start_time = time.time()
-    
+async def scrape(req: ScrapeRequest):
+    urls = [f"{req.base_url}?page={p}" for p in range(1, req.total_pages + 1)]
+    tasks = []
+
+    for url in urls:
+        delay = random.uniform(1.0, 3.0)
+        async def delayed_scrape(u=url, d=delay):
+            await asyncio.sleep(d)
+            return await scrape_page(u)
+        tasks.append(delayed_scrape())
+
     try:
-        async with async_playwright() as pw:
-            results = await scrape_with_retry(pw, base_url, total_pages)
-        
-        if not results:
-            raise HTTPException(status_code=204, detail="No data scraped. The website might be blocking requests.")
-        
-        # Remove duplicates based on company name and website
-        unique_results = []
-        seen = set()
-        for item in results:
-            key = (item.get('company', ''), item.get('website', ''))
-            if key not in seen and all(key):
-                seen.add(key)
-                unique_results.append(item)
-        
-        duration = time.time() - start_time
-        logging.info(f"Scraping completed in {duration:.2f} seconds. Found {len(unique_results)} unique results.")
-        
-        return {
-            "count": len(unique_results),
-            "pages_scraped": min(page_num, total_pages) if 'page_num' in locals() else 0,
-            "duration_seconds": round(duration, 2),
-            "data": unique_results
-        }
-        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logging.error(f"Error on page {i + 1}: {r}")
+
+        flat = [item for sublist in results if isinstance(sublist, list) for item in sublist]
+
+        if not flat:
+            raise HTTPException(status_code=204, detail="No data scraped.")
+
+        return {"count": len(flat), "data": flat}
+
     except Exception as e:
-        logging.error(f"Failed to complete scraping: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Scraping failed: {str(e)}")
+        logging.error(f"Scraping failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
