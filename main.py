@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, conint
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import asyncio
 import random
 import logging
@@ -19,7 +19,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/14.0.3 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/88.0.4324.96 Safari/537.36"
 ]
-PROXIES = [None]  # Add actual proxy URLs here if needed
+PROXIES = [None]  # Replace with actual proxy URLs if needed
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -54,40 +54,39 @@ if ENABLE_CORS:
 async def health():
     return {"status": "ok"}
 
-# ---------- Scraping Logic ----------
-async def scrape_page(url: str) -> List[Dict]:
-    ua = random.choice(USER_AGENTS) if USE_AGENT else None
-    proxy = random.choice(PROXIES)
+# ---------- Scraping Function ----------
+async def scrape_all_pages(base_url: str, total_pages: int) -> List[Dict]:
+    results = []
 
-    logging.info(f"Scraping: {url} | Proxy: {proxy} | UA: {ua}")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=HEADLESS)
+        context = await browser.new_context()
 
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=HEADLESS)
-            context = await browser.new_context(proxy={"server": proxy} if proxy else None)
+        if USE_AGENT:
+            await context.set_extra_http_headers({
+                "User-Agent": random.choice(USER_AGENTS)
+            })
 
-            if ua:
-                await context.set_extra_http_headers({'User-Agent': ua})
+        for page_num in range(1, total_pages + 1):
+            page_url = f"{base_url}?page={page_num}" if "?" not in base_url else f"{base_url}&page={page_num}"
+            logging.info(f"Scraping page {page_num}: {page_url}")
+            page = await context.new_page()
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    await page.goto(page_url, timeout=PAGE_LOAD_TIMEOUT)
+                    await page.wait_for_load_state("networkidle")
+                    break
+                except Exception as e:
+                    logging.warning(f"Attempt {attempt} failed for {page_url}: {e}")
+                    if attempt == MAX_RETRIES:
+                        logging.error(f"Skipping {page_url} after {MAX_RETRIES} attempts")
+                        await page.close()
+                        continue
+                    await asyncio.sleep(2 ** attempt)
 
             try:
-                page = await context.new_page()
-
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
-                        await page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
-                        break
-                    except Exception as e:
-                        logging.warning(f"Retry {attempt}/{MAX_RETRIES} for {url}. Error: {e}")
-                        await asyncio.sleep(2 ** attempt)
-                else:
-                    logging.error(f"Failed to load {url} after {MAX_RETRIES} attempts.")
-                    return []
-
-                await page.wait_for_load_state('networkidle')
-
-                results = []
-
-                # Regular listings
+                # Scrape regular listings
                 names = await page.eval_on_selector_all(
                     'a.provider__title-link.directory_profile',
                     'els => els.map(el => el.textContent.trim())'
@@ -120,10 +119,10 @@ async def scrape_page(url: str) -> List[Dict]:
                         'website': website,
                         'location': loc,
                         'featured': False,
-                        'source_page': url
+                        'source_page': page_url
                     })
 
-                # Featured listings
+                # Scrape featured listings
                 featured_names = await page.eval_on_selector_all(
                     'a.provider__title-link.ppc-website-link',
                     'els => els.map(el => el.textContent.trim())'
@@ -156,46 +155,29 @@ async def scrape_page(url: str) -> List[Dict]:
                         'website': website,
                         'location': loc,
                         'featured': True,
-                        'source_page': url
+                        'source_page': page_url
                     })
 
-                return results
+            except Exception as e:
+                logging.error(f"Failed to parse page {page_url}: {e}")
 
-            finally:
-                await context.close()
-                await browser.close()
+            await page.close()
 
-    except Exception as e:
-        logging.error(f"Scrape error on {url}: {e}")
-        return []
+        await context.close()
+        await browser.close()
+
+    return results
 
 # ---------- POST Endpoint ----------
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    urls = [f"{req.base_url}?page={p}" for p in range(1, req.total_pages + 1)]
-    tasks = []
-
-    async def delayed_scrape(u: str, d: float) -> List[Dict]:
-        await asyncio.sleep(d)
-        return await scrape_page(u)
-
-    for url in urls:
-        delay = random.uniform(1.0, 3.0)
-        tasks.append(delayed_scrape(url, delay))
-
     try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await scrape_all_pages(str(req.base_url), req.total_pages)
 
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logging.error(f"Error on page {i + 1}: {r}")
-
-        flat_results = [item for sublist in results if isinstance(sublist, list) for item in sublist]
-
-        if not flat_results:
+        if not results:
             raise HTTPException(status_code=204, detail="No data scraped.")
 
-        return {"count": len(flat_results), "data": flat_results}
+        return {"count": len(results), "data": results}
 
     except Exception as e:
         logging.error(f"Scraping failed: {e}")
